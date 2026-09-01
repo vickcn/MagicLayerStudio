@@ -1,0 +1,43 @@
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional
+
+
+@dataclass(frozen=True)
+class PageImage:
+    id: str
+    index: int
+    image_path: Path
+
+
+@dataclass(frozen=True)
+class PipelineOptions:
+    min_score: float = 0.50
+    padding: int = 8
+    debug_outputs: bool = True
+    dilate_kernel_size: int = 5
+    inpaint_radius: int = 5
+    inpaint_backend: str = "telea"
+    ocr_lang: str = "ch"
+    pdf_dpi: int = 200
+    work_dir: Optional[Path] = None
+    rebuild_pptx: bool = True
+    rebuilt_pptx_path: Optional[Path] = None
+
+
+@dataclass(frozen=True)
+class PageResult:
+    page: PageImage
+    output_dir: Path
+    layers_json: Path
+    objects_json: Path
+    background_path: Optional[Path]
+
+
+@dataclass(frozen=True)
+class DocumentResult:
+    source_path: Path
+    source_type: str
+    output_dir: Path
+    pages: List[PageResult]
+    rebuilt_pptx_path: Optional[Path] = None

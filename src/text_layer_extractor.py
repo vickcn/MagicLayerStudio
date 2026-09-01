@@ -288,6 +288,14 @@ def refine_text_mask(
             and band_overlap_ratio < 0.5
             and min_distance > close_distance
         )
+        nearby_punctuation = (
+            area <= 400
+            and comp_h <= max(24, int(round(text_h * 0.45)))
+            and width_ratio <= 0.16
+            and x_offset <= 1.15
+            and min_distance <= far_distance
+            and not touches_edge
+        )
         edge_tiny_stray = (
             area <= 400
             and touches_edge
@@ -305,7 +313,12 @@ def refine_text_mask(
             or (within_reasonable_span and min_distance <= far_distance)
         )
 
-        if far_and_tall or stray_spike or tiny_stray or edge_tiny_stray:
+        if (
+            far_and_tall
+            or stray_spike
+            or (tiny_stray and not nearby_punctuation)
+            or edge_tiny_stray
+        ):
             keep = False
 
         if keep:

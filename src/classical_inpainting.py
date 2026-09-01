@@ -47,10 +47,10 @@ def load_or_build_combined_text_mask(
     layers: Sequence[dict],
 ) -> np.ndarray:
     mask_path = output_dir / "combined_text_mask.png"
-    combined_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-
-    if combined_mask is not None:
-        return combined_mask
+    if mask_path.exists():
+        combined_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if combined_mask is not None:
+            return combined_mask
 
     return build_combined_text_mask_from_layers(
         output_dir,

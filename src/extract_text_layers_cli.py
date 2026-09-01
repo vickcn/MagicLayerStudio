@@ -19,12 +19,17 @@ except ModuleNotFoundError:
         compose_text_object_layers,
         render_grouped_objects_preview,
     )
+try:
+    from src.document_cli import main as document_main
+except ModuleNotFoundError:
+    from document_cli import main as document_main
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--image", required=True, help="Original slide image")
-    parser.add_argument("-j", "--json", required=True, help="PaddleOCR result JSON")
+    parser.add_argument("inputs", nargs="*", type=Path)
+    parser.add_argument("-i", "--image", help="Original slide image")
+    parser.add_argument("-j", "--json", help="PaddleOCR result JSON")
     parser.add_argument("-o", "--output", default="output_layers")
     parser.add_argument("-ms", "--min-score", type=float, default=0.50)
     parser.add_argument(
@@ -38,6 +43,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="OpenCV inpainting neighborhood radius",
     )
+    parser.add_argument("-pdi", "--pdf-dpi", type=int, default=200)
+    parser.add_argument("-ppto", "--pptx-output", type=Path)
+    parser.add_argument(
+        "-nbppt",
+        "--no-rebuild-pptx",
+        action="store_true",
+        help="Disable rebuilt PPTX output for document inputs",
+    )
+    parser.add_argument(
+        "-ib", 
+        "--inpaint-backend",
+        choices=["telea", "none"],
+        default="telea",
+    )
     parser.add_argument("-pd", "--padding", type=int, default=8)
     parser.add_argument(
         "-nd", "--no-debug",
@@ -48,7 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.inputs:
+        if args.image or args.json:
+            parser.error("Use either positional document inputs or --image/--json, not both.")
+        document_main()
+        return
+    if not args.image or not args.json:
+        parser.error("--image and --json are required when no positional input is provided.")
+
     extraction_output = extract_text_layers(
         ExtractionOptions(
             image_path=Path(args.image),
@@ -91,18 +119,16 @@ def main() -> None:
         import cv2
         cv2.imwrite(str(output_dir / "grouped_objects_preview.png"), preview)
 
-    # run_classical_inpainting_baseline(
-    #     Path(args.image),
-    #     output_dir,
-    #     extraction_output["layers"],
-    # )
-    run_classical_inpainting_baseline(
-        Path(args.image),
-        output_dir,
-        extraction_output["layers"],
-        dilate_kernel_size=args.dilate_kernel,
-        inpaint_radius=args.inpaint_radius,
-    )
+    if args.inpaint_backend == "telea":
+        run_classical_inpainting_baseline(
+            Path(args.image),
+            output_dir,
+            extraction_output["layers"],
+            dilate_kernel_size=args.dilate_kernel,
+            inpaint_radius=args.inpaint_radius,
+        )
+    elif args.inpaint_backend != "none":
+        parser.error(f"Unsupported inpaint backend: {args.inpaint_backend}")
 
     shutil.make_archive(str(output_dir), "zip", root_dir=output_dir)
 
