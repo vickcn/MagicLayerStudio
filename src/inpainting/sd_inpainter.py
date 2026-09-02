@@ -2,14 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import torch
-
 from PIL import (
     Image,
     ImageFilter,
 )
-
-from diffusers import StableDiffusionInpaintPipeline
 
 
 MODEL_ID = (
@@ -23,6 +19,13 @@ class SDInpainter:
         self,
         model_id: str = MODEL_ID,
     ) -> None:
+        try:
+            import torch
+            from diffusers import StableDiffusionInpaintPipeline
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "SD backend requires torch and diffusers in the active environment."
+            ) from exc
 
         if torch.backends.mps.is_available():
             self.device = "mps"
@@ -73,6 +76,7 @@ class SDInpainter:
         steps: int = 25,
         guidance_scale: float = 5.0,
         max_dimension: int = 768,
+        mask_expand_radius: int = 16,
     ) -> Image.Image:
 
         image = image.convert("RGB")
@@ -81,8 +85,9 @@ class SDInpainter:
         # SD 專用 mask expansion。
         # 必須連同文字的 outline / shadow / glow 一起移除，
         # 否則 diffusion 容易重新生成文字輪廓。
+        kernel_size = mask_expand_radius * 2 + 1
         mask = mask.filter(
-            ImageFilter.MaxFilter(21)
+            ImageFilter.MaxFilter(kernel_size)
         )
 
         original_size = image.size

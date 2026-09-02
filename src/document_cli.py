@@ -20,13 +20,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pdf-dpi", type=int, default=200)
     parser.add_argument("--pptx-output", type=Path)
     parser.add_argument(
-        "--no-rebuild-pptx",
+        "-nrb", "--no-rebuild-pptx",
         action="store_true",
         help="Disable rebuilt PPTX output",
     )
     parser.add_argument(
-        "--inpaint-backend",
-        choices=["telea", "none"],
+        "-ib", "--inpaint-backend",
+        # choices=["telea", "none"],
+        choices=[
+            "none",
+            "telea",
+            "sd",
+        ],
         default="telea",
     )
     parser.add_argument(

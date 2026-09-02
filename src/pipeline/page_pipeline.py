@@ -78,17 +78,34 @@ def process_page(
         cv2.imwrite(str(output_dir / "grouped_objects_preview.png"), preview)
 
     background_path = None
-    if options.inpaint_backend == "telea":
-        run_classical_inpainting_baseline(
-            page.image_path,
-            output_dir,
-            extraction_output["layers"],
-            dilate_kernel_size=options.dilate_kernel_size,
-            inpaint_radius=options.inpaint_radius,
+    # if options.inpaint_backend == "telea":
+    #     run_classical_inpainting_baseline(
+    #         page.image_path,
+    #         output_dir,
+    #         extraction_output["layers"],
+    #         dilate_kernel_size=options.dilate_kernel_size,
+    #         inpaint_radius=options.inpaint_radius,
+    #     )
+    #     background_path = output_dir / "background_telea.png"
+    # elif options.inpaint_backend != "none":
+    #     raise ValueError(f"Unsupported inpaint backend: {options.inpaint_backend}")
+    try:
+        from src.inpainting.background_inpainter import (
+            inpaint_background,
         )
-        background_path = output_dir / "background_telea.png"
-    elif options.inpaint_backend != "none":
-        raise ValueError(f"Unsupported inpaint backend: {options.inpaint_backend}")
+    except ModuleNotFoundError:
+        from inpainting.background_inpainter import (
+            inpaint_background,
+        )
+    background_path = inpaint_background(
+        image_path=page.image_path,
+        output_dir=output_dir,
+        layers=extraction_output["layers"],
+        objects=objects,
+        backend=options.inpaint_backend,
+        dilate_kernel_size=options.dilate_kernel_size,
+        inpaint_radius=options.inpaint_radius,
+    )
 
     shutil.make_archive(str(output_dir), "zip", root_dir=output_dir)
 
