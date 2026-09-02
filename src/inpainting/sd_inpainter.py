@@ -26,7 +26,8 @@ class SDInpainter:
 
         if torch.backends.mps.is_available():
             self.device = "mps"
-            dtype = torch.float16
+            # dtype = torch.float16
+            dtype = torch.float32
 
         elif torch.cuda.is_available():
             self.device = "cuda"
@@ -40,12 +41,18 @@ class SDInpainter:
             f"[SD] loading model on {self.device}"
         )
 
-        self.pipe = (
-            StableDiffusionInpaintPipeline
-            .from_pretrained(
-                model_id,
-                dtype=dtype,
-            )
+        # self.pipe = (
+        #     StableDiffusionInpaintPipeline
+        #     .from_pretrained(
+        #         model_id,
+        #         dtype=dtype,
+        #     )
+        # )
+        self.pipe = StableDiffusionInpaintPipeline.from_pretrained(
+            model_id,
+            dtype=dtype,
+            safety_checker=None,
+            requires_safety_checker=False,
         )
 
         self.pipe = self.pipe.to(
@@ -70,6 +77,13 @@ class SDInpainter:
 
         image = image.convert("RGB")
         mask = mask.convert("L")
+
+        # SD 專用 mask expansion。
+        # 必須連同文字的 outline / shadow / glow 一起移除，
+        # 否則 diffusion 容易重新生成文字輪廓。
+        mask = mask.filter(
+            ImageFilter.MaxFilter(21)
+        )
 
         original_size = image.size
 
@@ -128,7 +142,7 @@ class SDInpainter:
             1.0,
             max_dimension / max(width, height),
         )
-
+        
         width = round(width * scale)
         height = round(height * scale)
 

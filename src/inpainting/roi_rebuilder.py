@@ -24,9 +24,9 @@ class ROI:
 def build_object_roi(
     obj: dict,
     image_size: tuple[int, int],
-    padding_ratio: float = 0.30,
-    min_padding: int = 80,
-    max_padding: int = 300,
+    min_padding: int = 96,
+    max_padding: int = 384,
+    target_aspect_ratio: float = 1.5,
 ) -> ROI:
     image_width, image_height = image_size
 
@@ -35,28 +35,38 @@ def build_object_roi(
     width = int(obj["width"])
     height = int(obj["height"])
 
-    # 依文字物件高度決定需要多少背景 context
-    padding = round(
-        max(width, height) * padding_ratio
-    )
-
-    padding = max(
+    # 基本 padding 主要依文字高度，不依超寬 width
+    base_padding = round(height * 0.6)
+    base_padding = max(
         min_padding,
-        min(max_padding, padding),
+        min(max_padding, base_padding),
     )
 
-    x1 = max(0, x - padding)
-    y1 = max(0, y - padding)
+    x1 = max(0, x - base_padding)
+    x2 = min(image_width, x + width + base_padding)
 
-    x2 = min(
-        image_width,
-        x + width + padding,
+    y1 = max(0, y - base_padding)
+    y2 = min(image_height, y + height + base_padding)
+
+    roi_width = x2 - x1
+    roi_height = y2 - y1
+
+    # 超寬 ROI：優先增加上下 context
+    desired_height = int(
+        roi_width / target_aspect_ratio
     )
 
-    y2 = min(
-        image_height,
-        y + height + padding,
-    )
+    if desired_height > roi_height:
+        extra = desired_height - roi_height
+
+        top_extra = extra // 2
+        bottom_extra = extra - top_extra
+
+        y1 = max(0, y1 - top_extra)
+        y2 = min(
+            image_height,
+            y2 + bottom_extra,
+        )
 
     return ROI(
         x1=x1,
