@@ -51,10 +51,7 @@ def inpaint_background(
                 mask_path = output_dir / "combined_text_mask.png"
 
             if mask_path.exists():
-                original = Image.open(image_path).convert("RGB")
                 mask = Image.open(mask_path).convert("L")
-                if mask.size != original.size:
-                    mask = mask.resize(original.size, Image.NEAREST)
 
                 if harmonizer is None:
                     harmonizer = BackgroundHarmonizer(
@@ -66,9 +63,11 @@ def inpaint_background(
                     candidate_path = output_dir / candidate_name
                     if candidate_path.exists():
                         repaired = Image.open(candidate_path).convert("RGB")
-                        if repaired.size != original.size:
-                            repaired = repaired.resize(original.size, Image.LANCZOS)
-                        harmonized = harmonizer.harmonize(original, repaired, mask)
+                        if mask.size != repaired.size:
+                            mask = mask.resize(repaired.size, Image.NEAREST)
+                        # 不要拿含字的 original 原圖作為 feather reference，以避免字跡滲漏混回邊緣
+                        reference = repaired.copy()
+                        harmonized = harmonizer.harmonize(reference, repaired, mask)
                         harmonized.save(candidate_path)
 
         return bg_path
@@ -301,13 +300,25 @@ def _run_sd(
         )
 
     if harmonize:
-        original = Image.open(image_path).convert("RGB")
+        # 使用 expanded hybrid mask 替代單純 raw alpha page_mask
+        mask_path = output_dir / "inpaint_mask.png"
+        if mask_path.exists():
+            final_mask = Image.open(mask_path).convert("L")
+        else:
+            final_mask = page_mask
+
+        # 使用 Telea 或已抹平底圖做 reference，防止原始文字滲漏
+        if telea_bg_path.exists():
+            reference = Image.open(telea_bg_path).convert("RGB")
+        else:
+            reference = working.copy()
+
         if harmonizer is None:
             harmonizer = BackgroundHarmonizer(
                 feather_radius=12,
                 transition_width=24,
             )
-        working = harmonizer.harmonize(original, working, page_mask)
+        working = harmonizer.harmonize(reference, working, final_mask)
 
     output_path = (
         output_dir

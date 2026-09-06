@@ -72,6 +72,85 @@ def create_inpaint_mask(
     )
 
 
+def build_block_text_mask_from_layers(
+    layers: Sequence[dict],
+    canvas_size: tuple[int, int],
+    padding: int = 12,
+    min_block_height: int = 18,
+) -> np.ndarray:
+    height, width = canvas_size
+    mask = np.zeros((height, width), dtype=np.uint8)
+
+    for layer in layers:
+        try:
+            x = int(layer["x"])
+            y = int(layer["y"])
+            w = int(layer["width"])
+            h = int(layer["height"])
+        except KeyError:
+            continue
+
+        if w <= 0 or h <= 0:
+            continue
+
+        # 很小的標點可以留給 alpha mask，避免整塊挖太大
+        if h < min_block_height and w < min_block_height:
+            continue
+
+        pad_x = max(padding, round(h * 0.25))
+        pad_y = max(padding, round(h * 0.35))
+
+        x1 = max(0, x - pad_x)
+        y1 = max(0, y - pad_y)
+        x2 = min(width, x + w + pad_x)
+        y2 = min(height, y + h + pad_y)
+
+        cv2.rectangle(
+            mask,
+            (x1, y1),
+            (x2, y2),
+            255,
+            thickness=-1,
+        )
+
+    return mask
+
+
+def create_hybrid_inpaint_mask(
+    combined_text_mask: np.ndarray,
+    block_text_mask: np.ndarray,
+    kernel_size: int = 15,
+    iterations: int = 1,
+) -> np.ndarray:
+    alpha_kernel = np.ones((kernel_size, kernel_size), np.uint8)
+
+    alpha_expanded = cv2.dilate(
+        combined_text_mask,
+        alpha_kernel,
+        iterations=iterations,
+    )
+
+    # block 不要太硬，先 close，再 dilate
+    block_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (kernel_size * 2 + 1, kernel_size * 2 + 1),
+    )
+
+    block_expanded = cv2.morphologyEx(
+        block_text_mask,
+        cv2.MORPH_CLOSE,
+        block_kernel,
+    )
+
+    block_expanded = cv2.dilate(
+        block_expanded,
+        block_kernel,
+        iterations=1,
+    )
+
+    return np.maximum(alpha_expanded, block_expanded)
+
+
 def create_source_with_mask_preview(
     image: np.ndarray,
     mask: np.ndarray,
@@ -90,17 +169,11 @@ def create_source_with_mask_preview(
     return preview
 
 
-# def run_classical_inpainting_baseline(
-#     image_path: Path,
-#     output_dir: Path,
-#     layers: Sequence[dict],
-#     radius: int = 5,
-# ) -> dict:
 def run_classical_inpainting_baseline(
     image_path: Path,
     output_dir: Path,
     layers: Sequence[dict],
-    dilate_kernel_size: int = 5,
+    dilate_kernel_size: int = 15,
     inpaint_radius: int = 5,
 ) -> dict:
     image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
@@ -112,23 +185,19 @@ def run_classical_inpainting_baseline(
         output_dir,
         layers,
     )
-    inpaint_mask = create_inpaint_mask(
-        combined_text_mask,
+    
+    block_text_mask = build_block_text_mask_from_layers(
+        layers=layers,
+        canvas_size=image.shape[:2],
+        padding=max(8, dilate_kernel_size),
+    )
+
+    inpaint_mask = create_hybrid_inpaint_mask(
+        combined_text_mask=combined_text_mask,
+        block_text_mask=block_text_mask,
         kernel_size=dilate_kernel_size,
     )
 
-    # telea = cv2.inpaint(
-    #     image,
-    #     inpaint_mask,
-    #     radius,
-    #     cv2.INPAINT_TELEA,
-    # )
-    # ns = cv2.inpaint(
-    #     image,
-    #     inpaint_mask,
-    #     radius,
-    #     cv2.INPAINT_NS,
-    # )
     telea = cv2.inpaint(
         image,
         inpaint_mask,

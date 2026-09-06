@@ -14,10 +14,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("inputs", nargs="+", type=Path)
     parser.add_argument("-o", "--output", default="output_document")
     parser.add_argument("-ms", "--min-score", type=float, default=0.50)
-    parser.add_argument("-pd", "--padding", type=int, default=8)
-    parser.add_argument("-dk", "--dilate-kernel", type=int, default=5)
+    parser.add_argument("-pd", "--padding", type=int, default=8, help="Foreground text padding")
+    parser.add_argument("-dk", "--dilate-kernel", type=int, default=31, help="Background inpaint dilation kernel size")
     parser.add_argument("-ir", "--inpaint-radius", type=int, default=5)
-    parser.add_argument("--pdf-dpi", type=int, default=200)
+    parser.add_argument("--pdf-dpi", type=int, default=120)
     parser.add_argument("--pptx-output", type=Path)
     parser.add_argument(
         "-nrb", "--no-rebuild-pptx",

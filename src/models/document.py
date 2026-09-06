@@ -15,12 +15,12 @@ class PipelineOptions:
     min_score: float = 0.50
     padding: int = 8
     debug_outputs: bool = True
-    dilate_kernel_size: int = 5
+    dilate_kernel_size: int = 31
     inpaint_radius: int = 5
     inpaint_backend: str = "telea"
     harmonize: bool = True
     ocr_lang: str = "ch"
-    pdf_dpi: int = 200
+    pdf_dpi: int = 120
     work_dir: Optional[Path] = None
     rebuild_pptx: bool = True
     rebuilt_pptx_path: Optional[Path] = None
