@@ -35,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="telea",
     )
     parser.add_argument(
+        "-nh",
+        "--no-harmonize",
+        action="store_true",
+        help="Disable background harmonization post-processing",
+    )
+    parser.add_argument(
         "-nd",
         "--no-debug",
         action="store_true",
@@ -55,6 +61,7 @@ def main() -> None:
             dilate_kernel_size=args.dilate_kernel,
             inpaint_radius=args.inpaint_radius,
             inpaint_backend=args.inpaint_backend,
+            harmonize=not args.no_harmonize,
             pdf_dpi=args.pdf_dpi,
             rebuild_pptx=not args.no_rebuild_pptx,
             rebuilt_pptx_path=args.pptx_output,

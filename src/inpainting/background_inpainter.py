@@ -6,11 +6,13 @@ from typing import Sequence
 from PIL import Image
 
 try:
-    from src.classical_inpainting import run_classical_inpainting_baseline
+    from src.inpainting.background_harmonizer import BackgroundHarmonizer
+    from src.inpainting.classical_inpainting import run_classical_inpainting_baseline
     from src.inpainting.roi_rebuilder import build_object_roi, crop_roi
     from src.inpainting.sd_inpainter import SDInpainter
 except ModuleNotFoundError:
-    from classical_inpainting import run_classical_inpainting_baseline
+    from inpainting.background_harmonizer import BackgroundHarmonizer
+    from inpainting.classical_inpainting import run_classical_inpainting_baseline
     from inpainting.roi_rebuilder import build_object_roi, crop_roi
     from inpainting.sd_inpainter import SDInpainter
 
@@ -23,12 +25,14 @@ def inpaint_background(
     backend: str = "telea",
     dilate_kernel_size: int = 15,
     inpaint_radius: int = 5,
+    harmonize: bool = True,
+    harmonizer: BackgroundHarmonizer | None = None,
 ) -> Path | None:
 
     if backend == "none":
         return None
 
-    if backend == "telea":
+    if backend in ("telea", "ns"):
         run_classical_inpainting_baseline(
             image_path,
             output_dir,
@@ -37,7 +41,37 @@ def inpaint_background(
             inpaint_radius=inpaint_radius,
         )
 
-        return output_dir / "background_telea.png"
+        bg_path = output_dir / f"background_{backend}.png"
+        if not bg_path.exists() and backend == "telea":
+            bg_path = output_dir / "background_telea.png"
+
+        if harmonize:
+            mask_path = output_dir / "inpaint_mask.png"
+            if not mask_path.exists():
+                mask_path = output_dir / "combined_text_mask.png"
+
+            if mask_path.exists():
+                original = Image.open(image_path).convert("RGB")
+                mask = Image.open(mask_path).convert("L")
+                if mask.size != original.size:
+                    mask = mask.resize(original.size, Image.NEAREST)
+
+                if harmonizer is None:
+                    harmonizer = BackgroundHarmonizer(
+                        feather_radius=12,
+                        transition_width=24,
+                    )
+
+                for candidate_name in ("background_telea.png", "background_ns.png"):
+                    candidate_path = output_dir / candidate_name
+                    if candidate_path.exists():
+                        repaired = Image.open(candidate_path).convert("RGB")
+                        if repaired.size != original.size:
+                            repaired = repaired.resize(original.size, Image.LANCZOS)
+                        harmonized = harmonizer.harmonize(original, repaired, mask)
+                        harmonized.save(candidate_path)
+
+        return bg_path
 
     if backend == "sd":
         return _run_sd(
@@ -47,6 +81,8 @@ def inpaint_background(
             objects=objects,
             dilate_kernel_size=dilate_kernel_size,
             inpaint_radius=inpaint_radius,
+            harmonize=harmonize,
+            harmonizer=harmonizer,
         )
 
     raise ValueError(
@@ -136,6 +172,8 @@ def _run_sd(
     objects: Sequence[dict],
     dilate_kernel_size: int = 15,
     inpaint_radius: int = 5,
+    harmonize: bool = True,
+    harmonizer: BackgroundHarmonizer | None = None,
 ) -> Path:
 
     # 先用 Telea 將整頁文字擦除挖掉，取得乾淨的底圖作為 SD 擴散延伸的基準
@@ -261,6 +299,15 @@ def _run_sd(
             repaired,
             (roi.x1, roi.y1),
         )
+
+    if harmonize:
+        original = Image.open(image_path).convert("RGB")
+        if harmonizer is None:
+            harmonizer = BackgroundHarmonizer(
+                feather_radius=12,
+                transition_width=24,
+            )
+        working = harmonizer.harmonize(original, working, page_mask)
 
     output_path = (
         output_dir

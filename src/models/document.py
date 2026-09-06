@@ -18,6 +18,7 @@ class PipelineOptions:
     dilate_kernel_size: int = 5
     inpaint_radius: int = 5
     inpaint_backend: str = "telea"
+    harmonize: bool = True
     ocr_lang: str = "ch"
     pdf_dpi: int = 200
     work_dir: Optional[Path] = None

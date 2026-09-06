@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 try:
-    from src.classical_inpainting import run_classical_inpainting_baseline
+    from src.inpainting.classical_inpainting import run_classical_inpainting_baseline
     from src.text_layer_extractor import ExtractionOptions, extract_text_layers
     from src.text_object_grouper import (
         build_text_objects,
@@ -12,7 +12,7 @@ try:
         render_grouped_objects_preview,
     )
 except ModuleNotFoundError:
-    from classical_inpainting import run_classical_inpainting_baseline
+    from inpainting.classical_inpainting import run_classical_inpainting_baseline
     from text_layer_extractor import ExtractionOptions, extract_text_layers
     from text_object_grouper import (
         build_text_objects,

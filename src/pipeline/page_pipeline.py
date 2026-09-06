@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from src.classical_inpainting import run_classical_inpainting_baseline
+    from src.inpainting.classical_inpainting import run_classical_inpainting_baseline
     from src.models.document import PageImage, PageResult, PipelineOptions
     from src.text_layer_extractor import ExtractionOptions, extract_text_layers
     from src.text_object_grouper import (
@@ -15,7 +15,7 @@ try:
         render_grouped_objects_preview,
     )
 except ModuleNotFoundError:
-    from classical_inpainting import run_classical_inpainting_baseline
+    from inpainting.classical_inpainting import run_classical_inpainting_baseline
     from models.document import PageImage, PageResult, PipelineOptions
     from text_layer_extractor import ExtractionOptions, extract_text_layers
     from text_object_grouper import (
@@ -105,6 +105,7 @@ def process_page(
         backend=options.inpaint_backend,
         dilate_kernel_size=options.dilate_kernel_size,
         inpaint_radius=options.inpaint_radius,
+        harmonize=options.harmonize,
     )
 
     shutil.make_archive(str(output_dir), "zip", root_dir=output_dir)
