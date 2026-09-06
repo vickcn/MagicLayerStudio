@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import statistics
 from pathlib import Path
 from typing import Sequence
 
@@ -46,6 +45,8 @@ def inpaint_background(
             output_dir=output_dir,
             layers=layers,
             objects=objects,
+            dilate_kernel_size=dilate_kernel_size,
+            inpaint_radius=inpaint_radius,
         )
 
     raise ValueError(
@@ -91,23 +92,41 @@ def _build_page_mask(
     return mask
 
 
-def _get_object_text_height(
-    obj: dict,
-    layers: Sequence[dict],
-) -> int:
+def _build_layer_mask(
+    image_size: tuple[int, int],
+    output_dir: Path,
+    layer: dict,
+) -> Image.Image:
 
-    layer_ids = set(obj["layer_ids"])
+    mask = Image.new(
+        "L",
+        image_size,
+        0,
+    )
 
-    heights = [
-        int(layer["height"])
-        for layer in layers
-        if layer["id"] in layer_ids
-    ]
+    layer_file = layer.get("file")
 
-    if not heights:
-        return int(obj["height"])
+    if not layer_file:
+        return mask
 
-    return round(statistics.median(heights))
+    layer_path = output_dir / layer_file
+
+    if not layer_path.exists():
+        return mask
+
+    rgba = Image.open(layer_path).convert("RGBA")
+    alpha = rgba.getchannel("A")
+
+    mask.paste(
+        alpha,
+        (
+            int(layer["x"]),
+            int(layer["y"]),
+        ),
+        alpha,
+    )
+
+    return mask
 
 
 def _run_sd(
@@ -115,16 +134,27 @@ def _run_sd(
     output_dir: Path,
     layers: Sequence[dict],
     objects: Sequence[dict],
+    dilate_kernel_size: int = 15,
+    inpaint_radius: int = 5,
 ) -> Path:
 
-    image = Image.open(
-        image_path
-    ).convert("RGB")
+    # 先用 Telea 將整頁文字擦除挖掉，取得乾淨的底圖作為 SD 擴散延伸的基準
+    run_classical_inpainting_baseline(
+        image_path,
+        output_dir,
+        layers,
+        dilate_kernel_size=dilate_kernel_size,
+        inpaint_radius=inpaint_radius,
+    )
 
-    working = image.copy()
+    telea_bg_path = output_dir / "background_telea.png"
+    if telea_bg_path.exists():
+        working = Image.open(telea_bg_path).convert("RGB")
+    else:
+        working = Image.open(image_path).convert("RGB")
 
     page_mask = _build_page_mask(
-        image_size=image.size,
+        image_size=working.size,
         output_dir=output_dir,
         layers=layers,
     )
@@ -144,35 +174,49 @@ def _run_sd(
 
     inpainter = SDInpainter()
 
-    for index, obj in enumerate(objects):
+    for index, layer in enumerate(layers):
 
-        width = int(obj["width"])
-        height = int(obj["height"])
+        width = int(layer["width"])
+        height = int(layer["height"])
 
         if width < 20 or height < 20:
             continue
-
-        text_height = _get_object_text_height(
-            obj=obj,
-            layers=layers,
-        )
 
         expand_radius = max(
             12,
             min(
                 40,
-                round(text_height * 0.15),
+                round(height * 0.15),
             ),
         )
 
+        layer_mask = _build_layer_mask(
+            image_size=working.size,
+            output_dir=output_dir,
+            layer=layer,
+        )
+
+        if layer_mask.getbbox() is None:
+            continue
+
         roi = build_object_roi(
-            obj=obj,
-            image_size=image.size,
+            obj={
+                "x": int(layer["x"]),
+                "y": int(layer["y"]),
+                "width": width,
+                "height": height,
+            },
+            image_size=working.size,
+            min_padding=max(
+                128,
+                round(height * 0.8),
+            ),
+            max_padding=384,
         )
 
         roi_image, roi_mask = crop_roi(
             image=working,
-            mask=page_mask,
+            mask=layer_mask,
             roi=roi,
         )
 
@@ -193,22 +237,18 @@ def _run_sd(
             image=roi_image,
             mask=roi_mask,
             prompt=(
-                "continue only the existing surrounding "
-                "background naturally, preserve the original "
-                "background structure, lighting, texture, "
-                "colors and composition, seamless background, "
-                "empty background"
+                "Seamlessly reconstruct the masked area as the same "
+                "scene and background. Use the unmasked surroundings as "
+                "visual reference. Continue existing shapes, patterns, "
+                "gradients, lighting, perspective, texture, colors and "
+                "composition through the masked area."
             ),
             negative_prompt=(
                 "text, letters, words, typography, writing, "
-                "poster, advertisement, banner, billboard, "
-                "logo, watermark, sign, symbol, "
-                "human, person, face, object, "
-                "frame, panel, chart, interface, "
-                "illustration, collage"
+                "logo, watermark, sign"
             ),
-            guidance_scale=3.0,
-            steps=25,
+            guidance_scale=4.5,
+            steps=30,
             mask_expand_radius=expand_radius,
         )
 

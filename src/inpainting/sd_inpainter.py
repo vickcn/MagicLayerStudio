@@ -27,6 +27,8 @@ class SDInpainter:
                 "SD backend requires torch and diffusers in the active environment."
             ) from exc
 
+        self.torch = torch
+
         if torch.backends.mps.is_available():
             self.device = "mps"
             # dtype = torch.float16
@@ -48,14 +50,13 @@ class SDInpainter:
         #     StableDiffusionInpaintPipeline
         #     .from_pretrained(
         #         model_id,
-        #         dtype=dtype,
+        #         torch_dtype=dtype,
         #     )
         # )
-        self.pipe = StableDiffusionInpaintPipeline.from_pretrained(
-            model_id,
+        self.pipe = self._load_pipeline(
+            pipeline_cls=StableDiffusionInpaintPipeline,
+            model_id=model_id,
             dtype=dtype,
-            safety_checker=None,
-            requires_safety_checker=False,
         )
 
         self.pipe = self.pipe.to(
@@ -66,6 +67,31 @@ class SDInpainter:
             self.pipe.enable_attention_slicing()
 
         print("[SD] model ready")
+
+    def _load_pipeline(
+        self,
+        pipeline_cls,
+        model_id: str,
+        dtype,
+    ):
+        kwargs = {
+            "torch_dtype": dtype,
+            "safety_checker": None,
+            "requires_safety_checker": False,
+        }
+
+        try:
+            return pipeline_cls.from_pretrained(
+                model_id,
+                **kwargs,
+            )
+        except TypeError:
+            # 舊版 diffusers 使用 dtype；保留相容性，避免環境差異直接中斷。
+            kwargs["dtype"] = kwargs.pop("torch_dtype")
+            return pipeline_cls.from_pretrained(
+                model_id,
+                **kwargs,
+            )
 
     def inpaint(
         self,
@@ -81,6 +107,9 @@ class SDInpainter:
 
         image = image.convert("RGB")
         mask = mask.convert("L")
+        mask = mask.point(
+            lambda value: 255 if value > 0 else 0
+        )
 
         # SD 專用 mask expansion。
         # 必須連同文字的 outline / shadow / glow 一起移除，
@@ -114,15 +143,19 @@ class SDInpainter:
                 max_dimension=max_dimension,
             )
         )
+        prepared_mask = prepared_mask.point(
+            lambda value: 255 if value > 0 else 0
+        )
 
-        result = self.pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image=prepared_image,
-            mask_image=prepared_mask,
-            num_inference_steps=steps,
-            guidance_scale=guidance_scale,
-        ).images[0]
+        with self.torch.inference_mode():
+            result = self.pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=prepared_image,
+                mask_image=prepared_mask,
+                num_inference_steps=steps,
+                guidance_scale=guidance_scale,
+            ).images[0]
 
         result = result.resize(
             original_size,
