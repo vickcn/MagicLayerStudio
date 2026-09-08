@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional
 import aiofiles
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 # ── Project root ─────────────────────────────────────────────────────────────
@@ -67,10 +67,15 @@ app.add_middleware(
 
 @app.middleware("http")
 async def vercel_path_rewrite(request, call_next):
-    path = request.scope.get("path", "")
-    if path.startswith("/api/index.py"):
-        new_path = path[13:]
-        request.scope["path"] = new_path if new_path.startswith("/") else ("/" + new_path)
+    raw_path = request.scope.get("path", "")
+    if raw_path == "/api/index.py" or raw_path.startswith("/api/index.py"):
+        forwarded_uri = request.headers.get("x-forwarded-uri") or request.headers.get("x-invoke-path") or request.headers.get("x-matched-path")
+        if forwarded_uri:
+            real_path = forwarded_uri.split("?")[0]
+            request.scope["path"] = real_path if real_path.startswith("/") else ("/" + real_path)
+        else:
+            new_path = raw_path[13:]
+            request.scope["path"] = new_path if new_path.startswith("/") else ("/" + new_path)
     return await call_next(request)
 
 # Serve frontend static files
@@ -220,7 +225,7 @@ def _persist_job_meta(job_id: str):
 @app.get("/")
 def root():
     _cleanup_expired_jobs()
-    return {"message": "MagicLayerStudio API", "ui": "/app"}
+    return RedirectResponse(url="/app/", status_code=307)
 
 
 @app.get("/api/health")
