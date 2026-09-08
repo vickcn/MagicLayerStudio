@@ -24,6 +24,8 @@ class PipelineOptions:
     work_dir: Optional[Path] = None
     rebuild_pptx: bool = True
     rebuilt_pptx_path: Optional[Path] = None
+    extract_style_hints: bool = True   # 推算文字圖層樣式提示
+    source_pptx_path: Optional[Path] = None  # 如果來源是 PPTX，用於讀取原始字型
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,6 @@
+# Vercel/runtime dependencies. Heavy local OCR and diffusion dependencies stay
+# in the local conda environments and are not required for STUDIO_BACKEND=core_api.
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+aiofiles>=23.2.1

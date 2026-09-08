@@ -14,6 +14,10 @@ try:
         compose_text_object_layers,
         render_grouped_objects_preview,
     )
+    try:
+        from src.pptx_font_reader import enrich_layers_with_pptx_fonts
+    except ImportError:
+        enrich_layers_with_pptx_fonts = None
 except ModuleNotFoundError:
     from inpainting.classical_inpainting import run_classical_inpainting_baseline
     from models.document import PageImage, PageResult, PipelineOptions
@@ -23,6 +27,10 @@ except ModuleNotFoundError:
         compose_text_object_layers,
         render_grouped_objects_preview,
     )
+    try:
+        from pptx_font_reader import enrich_layers_with_pptx_fonts
+    except ImportError:
+        enrich_layers_with_pptx_fonts = None
 
 
 def process_page(
@@ -42,8 +50,38 @@ def process_page(
             min_score=options.min_score,
             padding=options.padding,
             debug_outputs=options.debug_outputs,
+            extract_style_hints=options.extract_style_hints,
         )
     )
+
+    # 如果來源是 PPTX，嘗試對映原始字型
+    if (
+        enrich_layers_with_pptx_fonts is not None
+        and options.extract_style_hints
+        and options.source_pptx_path is not None
+        and options.source_pptx_path.exists()
+        and extraction_output.get("layers")
+    ):
+        canvas = extraction_output.get("canvas", {})
+        try:
+            enrich_layers_with_pptx_fonts(
+                layers=extraction_output["layers"],
+                pptx_path=options.source_pptx_path,
+                slide_index=page.index,
+                canvas_width=canvas.get("width", 1),
+                canvas_height=canvas.get("height", 1),
+            )
+            # 更新 layers.json（已寫入磁碟，需覆寫）
+            import json as _json
+            layers_json_path = output_dir / "layers.json"
+            if layers_json_path.exists():
+                with open(layers_json_path, "r", encoding="utf-8") as _f:
+                    _data = _json.load(_f)
+                _data["layers"] = extraction_output["layers"]
+                with open(layers_json_path, "w", encoding="utf-8") as _f:
+                    _json.dump(_data, _f, ensure_ascii=False, indent=2)
+        except Exception as _e:
+            print(f"[warn] PPTX 字型對映失敗: {_e}")
 
     objects = build_text_objects(extraction_output["layers"])
     objects = compose_text_object_layers(

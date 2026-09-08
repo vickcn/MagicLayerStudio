@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MagicLayerStudio — 圖層分離工具</title>
+  <meta name="description" content="上傳 PPTX、PDF 或圖片，自動分離文字前景與背景圖層，並重組匯出。">
+  <!-- Google Fonts: 同步 smartRegistratorWebAPI 繁體中文/英數字型鏈 (Inter, LXGW WenKai TC, Noto Sans TC) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=LXGW+WenKai+TC&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=20260908">
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<header class="site-header">
+  <div class="logo">
+    <div class="logo-icon">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+        <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+      </svg>
+    </div>
+    MagicLayerStudio
+  </div>
+  <span class="header-badge">圖層分離工具</span>
+  <div class="header-status" aria-label="系統狀態">
+    <span class="status-dot"></span>
+    <span id="header-status-text">本機工作台</span>
+  </div>
+</header>
+
+<!-- ── Main layout ────────────────────────────────────────────────────────── -->
+<div class="main-layout">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar" aria-label="處理設定">
+
+    <!-- 上傳區 -->
+    <div class="workflow-card workflow-card-primary">
+      <div class="workflow-head">
+        <span class="step-mark">1</span>
+        <div>
+          <p class="section-title">上傳檔案</p>
+          <p class="section-copy">先放入 PPTX、PDF 或圖片，系統會分離背景與文字圖層。</p>
+        </div>
+      </div>
+      <div class="upload-zone" id="upload-zone">
+        <input type="file" id="file-input" accept=".pptx,.pdf,.png,.jpg,.jpeg">
+        <div class="upload-icon">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <p class="upload-title">拖放或點選上傳</p>
+        <p class="upload-hint">
+          支援 <span>.pptx</span> <span>.pdf</span> <span>.png</span> <span>.jpg</span>
+        </p>
+      </div>
+
+      <div class="upload-file-info hidden" id="file-info">
+        <svg class="file-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+        </svg>
+        <span class="file-name" id="file-name">—</span>
+        <button class="file-remove" id="btn-remove-file" title="移除">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- 參數設定 -->
+    <div class="workflow-card">
+      <div class="workflow-head">
+        <span class="step-mark">2</span>
+        <div>
+          <p class="section-title">處理設定</p>
+          <p class="section-copy">預設值適合一般簡報；需要微調 OCR 或修復範圍時再展開。</p>
+        </div>
+      </div>
+      <div class="params-toggle" id="params-toggle" role="button" tabindex="0" aria-expanded="false" aria-controls="params-body">
+        <span class="toggle-label">進階參數</span>
+        <span class="toggle-hint">DPI、外擴、修復半徑</span>
+        <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </div>
+      <div class="params-body" id="params-body">
+
+        <div class="param-row">
+          <label class="param-label" for="p-pdf-dpi">
+            渲染解析度
+            <small>--pdf-dpi</small>
+          </label>
+          <input type="number" id="p-pdf-dpi" value="120" min="60" max="300" step="10">
+        </div>
+
+        <div class="param-row">
+          <label class="param-label" for="p-padding">
+            文字外擴像素
+            <small>--padding</small>
+          </label>
+          <input type="number" id="p-padding" value="8" min="0" max="40">
+        </div>
+
+        <div class="param-row">
+          <label class="param-label" for="p-min-score">
+            最低信心分數
+            <small>--min-score</small>
+          </label>
+          <input type="number" id="p-min-score" value="0.50" min="0.1" max="0.99" step="0.05">
+        </div>
+
+        <div class="param-row">
+          <label class="param-label" for="p-dilate-kernel">
+            背景擦除核大小
+            <small>--dilate-kernel</small>
+          </label>
+          <input type="number" id="p-dilate-kernel" value="31" min="3" max="99" step="2">
+        </div>
+
+        <div class="param-row">
+          <label class="param-label" for="p-inpaint-radius">
+            修復半徑
+            <small>--inpaint-radius</small>
+          </label>
+          <input type="number" id="p-inpaint-radius" value="5" min="1" max="30">
+        </div>
+
+        <div class="param-row">
+          <label class="param-label" for="p-inpaint-backend">
+            修復後端
+            <small>--inpaint-backend</small>
+          </label>
+          <select id="p-inpaint-backend">
+            <option value="telea" selected>Telea 修復</option>
+            <option value="none">不修復</option>
+          </select>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 進度 -->
+    <div class="workflow-card">
+      <div class="workflow-head">
+        <span class="step-mark">3</span>
+        <div>
+          <p class="section-title">開始處理</p>
+          <p class="section-copy">大型簡報可能需要幾分鐘，處理期間請先保持此頁開啟。</p>
+        </div>
+      </div>
+      <div class="progress-wrap hidden" id="progress-wrap">
+        <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+      </div>
+      <p class="status-text" id="status-text"></p>
+      <button class="btn btn-primary btn-full" id="btn-process" disabled>
+        開始分析圖層
+      </button>
+    </div>
+
+  </aside>
+
+  <!-- ── Main content ── -->
+  <main class="main-content">
+    <section class="workspace-hero">
+      <div>
+        <p class="eyebrow">MagicLayer Studio</p>
+        <h1>把簡報拆成可編輯的圖層</h1>
+        <p>上傳檔案後，先檢查每頁縮圖，再進入單頁畫布調整文字位置、樣式與匯出結果。</p>
+      </div>
+      <div class="hero-metrics" aria-label="工作流程">
+        <div><strong>1</strong><span>上傳</span></div>
+        <div><strong>2</strong><span>分離</span></div>
+        <div><strong>3</strong><span>校稿</span></div>
+        <div><strong>4</strong><span>匯出</span></div>
+      </div>
+    </section>
+
+    <!-- 動作列（結果完成後顯示） -->
+    <div class="action-bar hidden" id="action-bar">
+      <div class="action-info" id="action-info">—</div>
+      <div class="action-btns">
+        <button class="btn btn-ghost" id="btn-delete-job" title="刪除此工作並釋放磁碟空間">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+            <path d="M10 11v6"/><path d="M14 11v6"/>
+            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+          </svg>
+          清除工作
+        </button>
+        <button class="btn btn-outline" id="btn-reprocess">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="1 4 1 10 7 10"/>
+            <path d="M3.51 15a9 9 0 1 0 .49-3.51"/>
+          </svg>
+          重新處理
+        </button>
+        <button class="btn btn-accent" id="btn-download">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          匯出 PPTX
+        </button>
+      </div>
+    </div>
+
+    <!-- 頁面縮圖列 -->
+    <section class="section-card">
+      <div class="section-card-head">
+        <div>
+          <p class="section-title">簡報頁面</p>
+          <p class="section-copy">完成處理後可從縮圖切換頁面。</p>
+        </div>
+        <span class="soft-count" id="pages-count">0 頁</span>
+      </div>
+
+      <!-- 空狀態 -->
+      <div class="pages-empty" id="pages-empty">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+          <line x1="8" y1="21" x2="16" y2="21"/>
+          <line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+        <div>
+          <div style="font-weight:500; color:var(--text-sub); margin-bottom:4px;">目前還沒有資料</div>
+          <div>上傳檔案並點擊「開始分析圖層」後，頁面縮圖將顯示於此。</div>
+        </div>
+      </div>
+
+      <!-- 縮圖格 -->
+      <div class="pages-grid hidden" id="pages-grid"></div>
+    </section>
+
+    <!-- 單頁圖層編輯與預覽 -->
+    <section id="page-detail" class="page-detail hidden">
+      <div class="page-detail-header">
+        <div class="page-header-left">
+          <span class="page-title" id="page-title">—</span>
+          <span class="badge-draft hidden" id="badge-draft">● 有未儲存變更</span>
+        </div>
+        <div class="view-tabs">
+          <button class="view-tab active" data-view="editor">互動編輯畫布</button>
+          <button class="view-tab" data-view="source">原始頁面</button>
+          <button class="view-tab" data-view="background">背景底圖</button>
+          <button class="view-tab" data-view="layer">文字圖層</button>
+        </div>
+        <div class="page-header-actions">
+          <button class="btn btn-sm btn-ghost" id="btn-undo" disabled title="復原 (Ctrl+Z)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+            復原
+          </button>
+          <button class="btn btn-sm btn-ghost" id="btn-redo" disabled title="重做 (Ctrl+Y)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>
+            重做
+          </button>
+          <button class="btn btn-sm btn-outline" id="btn-add-text" title="在當前頁面新增文字藝術師 / 文字方塊">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            新增文字
+          </button>
+          <button class="btn btn-sm btn-ghost" id="btn-discard-draft" disabled title="放棄本頁變更並還原至原始偵測狀態">
+            放棄變更
+          </button>
+          <button class="btn btn-sm btn-primary" id="btn-save-draft" disabled title="儲存本頁圖層與樣式設定 (Ctrl+S)">
+            儲存變更
+          </button>
+        </div>
+      </div>
+
+      <div class="page-detail-body">
+        <!-- 畫布區 -->
+        <div class="canvas-container" id="canvas-container">
+          <div class="img-loading hidden" id="img-loading">載入中…</div>
+          <div class="canvas-stage" id="canvas-stage">
+            <img id="main-img" src="" alt="底圖預覽" style="opacity:0;">
+            <!-- 互動文字物件疊層 -->
+            <div class="canvas-overlay" id="canvas-overlay"></div>
+          </div>
+          <!-- 快捷鍵小提示 -->
+          <div class="canvas-hints">
+            <span class="hint-item"><span class="kbd">Ctrl+Z / Y</span> 復原重做</span>
+            <span class="hint-item"><span class="kbd">Ctrl+C / V</span> 複製貼上</span>
+            <span class="hint-item"><span class="kbd">Del</span> 刪除</span>
+            <span class="hint-item"><span class="kbd">方向鍵</span> 微調位置</span>
+            <span class="hint-item"><span class="kbd">Esc</span> 取消選取</span>
+          </div>
+        </div>
+
+        <!-- 側邊欄：圖層清單 + 屬性編輯器 -->
+        <div class="detail-sidebar">
+          
+          <!-- 屬性編輯面板 -->
+          <div class="inspector-panel" id="inspector-panel">
+            <div class="inspector-header">
+              <span class="inspector-title" id="inspector-title">物件屬性設定</span>
+              <span class="badge badge-gray" id="inspector-obj-id">—</span>
+            </div>
+
+            <div class="inspector-empty" id="inspector-empty">
+              點選畫布或清單中的文字物件以進行編輯
+            </div>
+
+            <div class="inspector-body hidden" id="inspector-body">
+              
+              <!-- 模式切換 -->
+              <div class="form-group">
+                <label class="form-label">顯示模式</label>
+                <div class="segmented-control">
+                  <button type="button" class="seg-btn active" id="mode-image-btn" data-mode="image_layer">透明圖層 (PNG)</button>
+                  <button type="button" class="seg-btn" id="mode-wordart-btn" data-mode="wordart">文字藝術師 (文字)</button>
+                </div>
+              </div>
+
+              <!-- 文字內容 -->
+              <div class="form-group">
+                <label class="form-label" for="prop-text">文字內容</label>
+                <textarea id="prop-text" rows="2" class="form-input form-textarea" placeholder="輸入文字…"></textarea>
+              </div>
+
+              <!-- 樣式設定（文字模式專用或共用） -->
+              <div class="wordart-props" id="wordart-props">
+                <div class="form-row">
+                  <div class="form-group flex-1">
+                    <label class="form-label" for="prop-font-name">字型</label>
+                    <select id="prop-font-name" class="form-input">
+                      <option value="Noto Sans TC">思源黑體 (Noto Sans TC)</option>
+                      <option value="LXGW WenKai TC">霞鶩文楷 (LXGW WenKai TC)</option>
+                      <option value="Microsoft JhengHei">微軟正黑體</option>
+                      <option value="Inter">Inter (西文 / 數字)</option>
+                      <option value="Arial">Arial</option>
+                      <option value="DFKai-SB">標楷體</option>
+                      <option value="Noto Serif TC">思源宋體</option>
+                      <option value="Times New Roman">Times New Roman</option>
+                    </select>
+                  </div>
+                  <div class="form-group" style="width: 80px;">
+                    <label class="form-label" for="prop-font-size">大小 (pt)</label>
+                    <input type="number" id="prop-font-size" class="form-input" min="6" max="150" step="1">
+                  </div>
+                </div>
+
+                <div class="form-row items-center">
+                  <!-- 粗體 / 斜體 / 對齊 -->
+                  <div class="form-group flex-1">
+                    <label class="form-label">樣式與對齊</label>
+                    <div class="btn-group">
+                      <button type="button" class="btn-toggle" id="prop-bold" title="粗體"><b>B</b></button>
+                      <button type="button" class="btn-toggle" id="prop-italic" title="斜體"><i>I</i></button>
+                      <button type="button" class="btn-toggle" id="prop-align-left" title="靠左">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>
+                      </button>
+                      <button type="button" class="btn-toggle active" id="prop-align-center" title="置中">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="10" x2="6" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="18" y1="18" x2="6" y2="18"/></svg>
+                      </button>
+                      <button type="button" class="btn-toggle" id="prop-align-right" title="靠右">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="7" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="21" y1="18" x2="7" y2="18"/></svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- 色彩 -->
+                  <div class="form-group" style="width: 80px;">
+                    <label class="form-label" for="prop-color">文字色彩</label>
+                    <div class="color-picker-wrap">
+                      <input type="color" id="prop-color" class="color-input" value="#ffffff">
+                      <input type="text" id="prop-color-hex" class="form-input form-input-sm" value="#FFFFFF">
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 座標與尺寸 (可手動微調或查看) -->
+              <div class="form-row">
+                <div class="form-group flex-1">
+                  <label class="form-label">座標 X / Y</label>
+                  <div class="flex gap-4">
+                    <input type="number" id="prop-pos-x" class="form-input form-input-sm" title="X">
+                    <input type="number" id="prop-pos-y" class="form-input form-input-sm" title="Y">
+                  </div>
+                </div>
+                <div class="form-group flex-1">
+                  <label class="form-label">寬度 / 高度</label>
+                  <div class="flex gap-4">
+                    <input type="number" id="prop-pos-w" class="form-input form-input-sm" title="寬度">
+                    <input type="number" id="prop-pos-h" class="form-input form-input-sm" title="高度">
+                  </div>
+                </div>
+              </div>
+
+              <!-- 物件動作按鈕 -->
+              <div class="inspector-actions">
+                <button type="button" class="btn btn-sm btn-outline flex-1" id="btn-copy-obj" title="複製此物件 (Ctrl+C)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  複製物件
+                </button>
+                <button type="button" class="btn btn-sm btn-ghost btn-danger flex-1" id="btn-delete-obj" title="刪除此物件 (Del)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  刪除物件
+                </button>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- 各文字圖層清單 -->
+          <div class="layers-sidebar" id="layers-sidebar">
+            <p class="layer-label">圖層列表</p>
+            <div class="text-sm text-hint">選擇頁面後顯示</div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="busy-overlay hidden" id="busy-overlay" aria-live="polite">
+  <div class="busy-card">
+    <span class="spinner"></span>
+    <div>
+      <strong id="busy-title">處理中</strong>
+      <p id="busy-message">正在準備作業，請稍候。</p>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop hidden" id="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h2 id="confirm-title">請確認操作</h2>
+      <button type="button" class="modal-close" id="confirm-close" aria-label="關閉">×</button>
+    </div>
+    <p class="modal-message" id="confirm-message">請確認後再繼續。</p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="confirm-cancel">取消</button>
+      <button type="button" class="btn btn-accent" id="confirm-submit">確認</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast 容器 -->
+<div id="toast-container"></div>
+
+<script src="app.js?v=20260908"></script>
+</body>
+</html>

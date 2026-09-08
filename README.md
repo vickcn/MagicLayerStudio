@@ -34,6 +34,37 @@ PaddleOCR 自動交給 `padocr` 環境處理（無需手動切換）。
 
 ## 使用方式
 
+詳細操作指南請參閱 [USAGE.md](file:///Users/kexuen/projects/MagicLayerStudio/USAGE.md)。
+
+### 0. 網頁站台 (Web UI)
+
+啟動 FastAPI Web 伺服器：
+```bash
+cp .env.example .env  # 本地預設 STUDIO_BACKEND=local
+./scripts/start-studio-local.sh --reload
+```
+啟動後開啟瀏覽器存取 `http://localhost:8000/app/` 即可體驗視覺化上傳、單一物件圖層/文字模式切換與 PPTX 匯出功能。
+
+### 0.1 Backend adapter 與 Vercel
+
+Studio 的後端由 `STUDIO_BACKEND` 選擇：
+
+- `local`（預設）：直接使用本 repo 的 `src.pipeline`，適合本地 conda `lama` 環境。
+- `core_api`：透過 `MAGICLAYER_CORE_URL` 呼叫已部署的 MagicLayerCore，適合 Vercel。
+
+Vercel 部署前，在 Vercel Project Settings → Environment Variables 設定：
+
+```text
+STUDIO_BACKEND=core_api
+MAGICLAYER_CORE_URL=https://<magiclayer-core-api>
+MAGICLAYER_CORE_TOKEN=<optional-bearer-token>
+```
+
+專案已包含 `api/index.py`、`vercel.json` 與根目錄 `requirements.txt`。本地可用
+`./scripts/start-studio-vercel.sh` 對 Core API 模式做 smoke test；正式部署使用
+`vercel` CLI 或連接 Git repository 即可。Vercel 端不會載入本地 OCR/影像 pipeline，避免把
+重量級 conda 依賴帶進 Function bundle。
+
 ### 1. 處理簡報文件（PPTX / PDF / 多頁圖片）並自動重組 PPTX
 
 ```bash

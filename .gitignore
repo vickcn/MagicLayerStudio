@@ -1,4 +1,6 @@
 *.txt
+!requirements.txt
+!web/backend/requirements.txt
 *.log
 *.xlsx
 *.csv
@@ -14,6 +16,7 @@
 *.iss
 *bat
 *.env*
+!.env.example
 tmp**
 tmp/*
 *pyc*
@@ -35,4 +38,4 @@ issues*/*
 storage*/*
 samples*/*
 !README.md
-
+.vercel

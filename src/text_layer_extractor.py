@@ -1,9 +1,14 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+try:
+    from src.text_style_estimator import estimate_style_from_rgba
+except ImportError:
+    from text_style_estimator import estimate_style_from_rgba
 
 
 @dataclass(frozen=True)
@@ -14,6 +19,7 @@ class ExtractionOptions:
     min_score: float = 0.50
     padding: int = 8
     debug_outputs: bool = True
+    extract_style_hints: bool = True  # 是否推算並記錄文字樣式提示
 
 
 def create_debug_canvases(
@@ -444,21 +450,35 @@ def extract_text_layers(options: ExtractionOptions) -> dict:
                 py1,
             )
 
-        layers.append(
-            {
-                "id": f"text_{layer_index:03d}",
-                "type": "text",
-                "file": str(output_path.relative_to(options.output_dir)),
-                "text": text,
-                "score": float(score),
-                "ocr_box": [x1, y1, x2, y2],
-                "x": px1,
-                "y": py1,
-                "width": px2 - px1,
-                "height": py2 - py1,
-                "source_detection_index": detection_index,
-            }
-        )
+        # ── 樣式推算 ──────────────────────────────────────────────────────
+        style_hint = None
+        if options.extract_style_hints:
+            try:
+                style_hint = estimate_style_from_rgba(
+                    rgba,
+                    ocr_box_height_px=box_h,
+                    canvas_height_px=img_h,
+                ).to_dict()
+            except Exception:
+                style_hint = None
+
+        layer_entry = {
+            "id": f"text_{layer_index:03d}",
+            "type": "text",
+            "file": str(output_path.relative_to(options.output_dir)),
+            "text": text,
+            "score": float(score),
+            "ocr_box": [x1, y1, x2, y2],
+            "x": px1,
+            "y": py1,
+            "width": px2 - px1,
+            "height": py2 - py1,
+            "source_detection_index": detection_index,
+        }
+        if style_hint is not None:
+            layer_entry["style_hint"] = style_hint
+
+        layers.append(layer_entry)
 
         print(f"[{layer_index:03d}] {score:.3f} {text}")
         layer_index += 1

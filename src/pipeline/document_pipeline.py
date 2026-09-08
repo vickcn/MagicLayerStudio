@@ -17,6 +17,7 @@ try:
         process_page,
     )
     from src.pptx_rebuilder import (
+        MODE_IMAGE_LAYER,
         rebuild_pptx_from_document,
     )
 except ModuleNotFoundError:
@@ -31,6 +32,7 @@ except ModuleNotFoundError:
         process_page,
     )
     from pptx_rebuilder import (
+        MODE_IMAGE_LAYER,
         rebuild_pptx_from_document,
     )
 
@@ -39,6 +41,7 @@ def process_document(
     input_paths: Union[List[Path], Path],
     output_dir: Path,
     options: Optional[PipelineOptions] = None,
+    rebuild_mode: str = MODE_IMAGE_LAYER,
 ) -> DocumentResult:
     if options is None:
         options = PipelineOptions()
@@ -53,6 +56,17 @@ def process_document(
 
     primary_input = resolved_inputs[0]
     document_name = primary_input.stem
+
+    # PPTX 來源時，自動補充 source_pptx_path（供字型對映用）
+    if (
+        primary_input.suffix.lower() == ".pptx"
+        and options is not None
+        and options.source_pptx_path is None
+    ):
+        from dataclasses import replace
+        options = replace(options, source_pptx_path=primary_input)
+    elif options is None:
+        options = PipelineOptions()
 
     if len(resolved_inputs) > 1 or output_dir.name in ("output_document", "output", "tmp", "output_layers"):
         document_dir = output_dir / document_name
@@ -127,6 +141,7 @@ def process_document(
         rebuilt_pptx_path = rebuild_pptx_from_document(
             document_json_path=manifest_path,
             output_pptx_path=pptx_output,
+            rebuild_mode=rebuild_mode,
         )
         doc_result = DocumentResult(
             source_path=primary_input,
