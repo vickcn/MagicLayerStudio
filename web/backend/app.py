@@ -14,6 +14,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import parse_qsl, urlencode
 
 import aiofiles
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
@@ -69,8 +70,15 @@ app.add_middleware(
 async def vercel_path_rewrite(request, call_next):
     raw_path = request.scope.get("path", "")
     if raw_path == "/api/index.py" or raw_path.startswith("/api/index.py"):
+        query_pairs = parse_qsl(request.scope.get("query_string", b"").decode("utf-8"), keep_blank_values=True)
         forwarded_uri = request.headers.get("x-forwarded-uri") or request.headers.get("x-invoke-path") or request.headers.get("x-matched-path")
-        if forwarded_uri:
+        forwarded_path = next((value for key, value in query_pairs if key == "__studio_path"), "")
+        if forwarded_path:
+            real_path = forwarded_path
+            query_pairs = [(key, value) for key, value in query_pairs if key != "__studio_path"]
+            request.scope["query_string"] = urlencode(query_pairs).encode("utf-8")
+            request.scope["path"] = real_path if real_path.startswith("/") else ("/" + real_path)
+        elif forwarded_uri:
             real_path = forwarded_uri.split("?")[0]
             request.scope["path"] = real_path if real_path.startswith("/") else ("/" + real_path)
         else:
