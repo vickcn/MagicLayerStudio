@@ -40,11 +40,11 @@ class RemoteCoreBackend:
         }
         return self.client.submit_and_wait(input_path, output_dir, params)
 
-    def prepare_upload(self, filename: str, content_type: str, size: Optional[int]) -> dict:
-        return self.client.prepare_upload(filename, content_type, size)
+    def prepare_upload(self, filename: str, content_type: str, size: Optional[int], requested_by: Optional[str] = None, owner_email: Optional[str] = None) -> dict:
+        return self.client.prepare_upload(filename, content_type, size, requested_by=requested_by, owner_email=owner_email)
 
-    def complete_upload(self, upload_id: str, options: dict, filename: Optional[str] = None, size: Optional[int] = None) -> dict:
-        return self.client.complete_upload(upload_id, options, filename, size)
+    def complete_upload(self, upload_id: str, options: dict, filename: Optional[str] = None, size: Optional[int] = None, requested_by: Optional[str] = None, owner_email: Optional[str] = None) -> dict:
+        return self.client.complete_upload(upload_id, options, filename, size, requested_by=requested_by, owner_email=owner_email)
 
     def get_status(self, job_id: str) -> dict:
         return self.client.get_job(job_id)

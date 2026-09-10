@@ -30,10 +30,14 @@ class MagicLayerCoreClient:
         self.token = token
         self.timeout = timeout
 
-    def _request(self, url: str, data=None, headers=None, method=None):
+    def _request(self, url: str, data=None, headers=None, method=None, requested_by: Optional[str] = None, owner_email: Optional[str] = None):
         request_headers = dict(headers or {})
         if self.token:
             request_headers["Authorization"] = f"Bearer {self.token}"
+        if requested_by:
+            request_headers["X-MagicLayer-Requested-By"] = requested_by
+        if owner_email:
+            request_headers["X-MagicLayer-Owner-Email"] = owner_email
         try:
             return urlopen(Request(url, data=data, headers=request_headers, method=method), timeout=self.timeout)
         except HTTPError as error:
@@ -51,26 +55,30 @@ class MagicLayerCoreClient:
             pass
         return "core_request_failed"
 
-    def _json_request(self, path: str, payload=None, method="POST") -> dict:
+    def _json_request(self, path: str, payload=None, method="POST", requested_by: Optional[str] = None, owner_email: Optional[str] = None) -> dict:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"} if data is not None else {}
-        with self._request(urljoin(self.base_url, path), data=data, headers=headers, method=method) as response:
+        with self._request(urljoin(self.base_url, path), data=data, headers=headers, method=method, requested_by=requested_by, owner_email=owner_email) as response:
             return json.load(response)
 
-    def prepare_upload(self, filename: str, content_type: str, size: Optional[int]) -> dict:
+    def prepare_upload(self, filename: str, content_type: str, size: Optional[int], requested_by: Optional[str] = None, owner_email: Optional[str] = None) -> dict:
         return self._json_request(
             "v1/uploads/prepare",
-            {"filename": filename, "content_type": content_type, "size": size},
+            {"filename": filename, "content_type": content_type, "size": size, "requested_by": requested_by, "owner_email": owner_email},
+            requested_by=requested_by,
+            owner_email=owner_email,
         )
 
-    def complete_upload(self, upload_id: str, options: dict, filename: Optional[str] = None, size: Optional[int] = None) -> dict:
+    def complete_upload(self, upload_id: str, options: dict, filename: Optional[str] = None, size: Optional[int] = None, requested_by: Optional[str] = None, owner_email: Optional[str] = None) -> dict:
         return self._json_request(
             f"v1/uploads/{quote(upload_id, safe='')}/complete",
-            {"options": options, "filename": filename, "size": size},
+            {"options": options, "filename": filename, "size": size, "requested_by": requested_by, "owner_email": owner_email},
+            requested_by=requested_by,
+            owner_email=owner_email,
         )
 
-    def get_job(self, job_id: str) -> dict:
-        return self._json_request(f"v1/jobs/{quote(job_id, safe='')}", method="GET")
+    def get_job(self, job_id: str, requested_by: Optional[str] = None) -> dict:
+        return self._json_request(f"v1/jobs/{quote(job_id, safe='')}", method="GET", requested_by=requested_by)
 
     def health(self) -> dict:
         return self._json_request("health", method="GET")
@@ -122,7 +130,9 @@ class MagicLayerCoreClient:
         boundary = "----MagicLayerCoreBoundary"
         body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{input_path.name}\"\r\n"
                 "Content-Type: application/octet-stream\r\n\r\n").encode() + input_path.read_bytes()
-        body += (f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"params\"\r\n\r\n"
+        body += (f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"options\"\r\n\r\n"
+                 + json.dumps(params)
+                 + f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"params\"\r\n\r\n"
                  + json.dumps(params) + f"\r\n--{boundary}--\r\n").encode()
         with self._request(
             urljoin(self.base_url, "v1/jobs"),

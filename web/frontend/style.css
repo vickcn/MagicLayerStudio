@@ -32,16 +32,17 @@
   --shadow-sm: 0 1px 2px rgba(38,37,33,.06);
   --shadow:    0 10px 24px rgba(38,37,33,.10);
   --shadow-lg: 0 18px 42px rgba(38,37,33,.18);
-  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'PingFang TC', 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'LXGW WenKai TC', 'PingFang TC', 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
   --font-display: 'LXGW WenKai TC', var(--font);
-  --font-data: 'Times New Roman', Times, 'LXGW WenKai TC', 'PingFang TC', 'Noto Sans TC', 'Microsoft JhengHei', serif;
+  --font-data: 'Times New Roman', Times, 'LXGW WenKai TC', serif;
   --mono: 'SF Mono', 'Fira Code', 'Courier New', monospace;
   --transition: 160ms ease;
 }
 
 html { font-size: 15px; -webkit-font-smoothing: antialiased; }
 body {
-  font-family: var(--font);
+  /* 全站中英文：英數 Times 優先命中，中文落到 LXGW WenKai 霞鶩文楷 */
+  font-family: var(--font-data);
   background:
     linear-gradient(180deg, rgba(255,255,255,.45), rgba(255,255,255,0) 220px),
     var(--bg);
@@ -50,6 +51,34 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+/* 介面、按鈕與表單控制元件明確繼承全域（中文 WenKai、英數 Times） */
+button,
+input,
+select,
+textarea,
+.btn,
+.view-tab,
+.seg-btn,
+.btn-toggle,
+.step-mark,
+.hero-metrics,
+.soft-count,
+.header-badge,
+.badge-draft {
+  font-family: inherit;
+}
+
+/* 標題與重點展示：套用手寫楷體與 Times 字型鏈 */
+h1, h2, h3, h4,
+.site-header .logo,
+.workspace-hero h1,
+.page-title,
+.section-title,
+.workflow-head strong,
+.inspector-title {
+  font-family: var(--font-data);
 }
 
 body.is-busy { cursor: wait; }
@@ -423,7 +452,7 @@ body.is-busy .main-content { pointer-events: none; }
 input[type="number"],
 input[type="range"],
 select {
-  font-family: var(--font);
+  font-family: inherit;
   font-size: .82rem;
   color: var(--text);
   border: 1px solid var(--border);
@@ -451,7 +480,7 @@ select { padding: 4px 8px; }
   align-items: center;
   justify-content: center;
   gap: 6px;
-  font-family: var(--font);
+  font-family: inherit;
   font-size: .85rem;
   font-weight: 500;
   border: none;
@@ -860,7 +889,7 @@ select { padding: 4px 8px; }
 .gap-4 { gap: 4px; }
 
 .form-input {
-  font-family: var(--font);
+  font-family: inherit;
   font-size: .82rem;
   color: var(--text);
   border: 1px solid var(--border);

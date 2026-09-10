@@ -1,0 +1,15 @@
+{
+  "name": "magic-layer-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MagicLayerStudio Web Workbench",
+  "scripts": {
+    "dev": "conda run --no-capture-output -n lama uvicorn web.backend.app:app --reload --port 8000",
+    "start": "conda run --no-capture-output -n lama uvicorn web.backend.app:app --port 8000",
+    "postinstall": "node ./tools/build-font-assets.js",
+    "build": "node ./tools/build-font-assets.js"
+  },
+  "dependencies": {
+    "@fontsource/lxgw-wenkai-tc": "^5.2.9"
+  }
+}

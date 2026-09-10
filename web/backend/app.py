@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qsl, urlencode
 
 import aiofiles
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -108,7 +108,20 @@ def _set_job(job_id: str, **kwargs):
 
 def _get_job(job_id: str) -> Optional[Dict[str, Any]]:
     with _jobs_lock:
-        return _jobs.get(job_id)
+        job = _jobs.get(job_id)
+        if job is not None:
+            return job
+    meta_file = JOBS_DIR / job_id / "meta.json"
+    if meta_file.exists():
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            with _jobs_lock:
+                _jobs[job_id] = meta
+            return meta
+        except Exception:
+            pass
+    return None
 
 
 def _delete_job_data(job_id: str):
@@ -357,34 +370,44 @@ async def upload_file(file: UploadFile = File(...)):
 
 
 @app.post("/api/upload/prepare")
-def prepare_remote_upload(payload: Dict[str, Any]):
+def prepare_remote_upload(payload: Dict[str, Any], request: Request):
     """Request a short-lived Core/GCS upload URL without receiving file bytes."""
     if UPLOAD_MODE != "gcs" or BACKEND.name != "core_api":
         raise HTTPException(404, "目前環境使用本機上傳流程")
     filename = str(payload.get("filename") or "")
     if not filename:
         raise HTTPException(400, "缺少檔案名稱")
+    _, session = resolve_google_session(request)
+    requested_by = session.get("sub") if session else None
+    owner_email = session.get("email") if session else None
     try:
         return BACKEND.prepare_upload(
             filename,
             str(payload.get("content_type") or "application/octet-stream"),
             payload.get("size"),
+            requested_by=requested_by,
+            owner_email=owner_email,
         )
     except Exception as exc:
         raise _core_http_error(exc, "prepare_upload") from exc
 
 
 @app.post("/api/upload/{upload_id}/complete")
-def complete_remote_upload(upload_id: str, payload: Dict[str, Any]):
+def complete_remote_upload(upload_id: str, payload: Dict[str, Any], request: Request):
     """Tell Core to verify the GCS object and start the heavy job."""
     if UPLOAD_MODE != "gcs" or BACKEND.name != "core_api":
         raise HTTPException(404, "目前環境使用本機上傳流程")
+    _, session = resolve_google_session(request)
+    requested_by = session.get("sub") if session else None
+    owner_email = session.get("email") if session else None
     try:
         core_job = BACKEND.complete_upload(
             upload_id,
             payload.get("options") or {},
             payload.get("filename"),
             payload.get("size"),
+            requested_by=requested_by,
+            owner_email=owner_email,
         )
     except Exception as exc:
         raise _core_http_error(exc, "complete_upload") from exc
@@ -580,6 +603,24 @@ def delete_job(job_id: str):
     return {"deleted": job_id}
 
 
+@app.get("/api/jobs")
+def list_jobs():
+    """列出所有已有產出的工作清單。"""
+    _cleanup_expired_jobs()
+    with _jobs_lock:
+        jobs_list = []
+        for jid, jdata in _jobs.items():
+            jobs_list.append({
+                "job_id": jid,
+                "filename": jdata.get("filename"),
+                "status": jdata.get("status"),
+                "finished_at": jdata.get("finished_at", 0),
+                "page_count": len(jdata.get("pages", [])),
+            })
+        jobs_list.sort(key=lambda x: x.get("finished_at") or 0, reverse=True)
+        return {"jobs": jobs_list}
+
+
 @app.post("/api/jobs/{job_id}/save_custom")
 async def save_custom_edits(job_id: str, edits: Dict[str, Any]):
     """
@@ -703,9 +744,14 @@ def page_background(job_id: str, page_index: int):
     bg = pages[page_index].get("background")
     if isinstance(bg, str) and bg.startswith(("http://", "https://")):
         return RedirectResponse(url=bg, status_code=307)
-    if not bg or not Path(bg).exists():
+    if not bg:
         raise HTTPException(404, "背景圖不存在")
-    return FileResponse(bg, media_type="image/png")
+    bg_path = Path(bg)
+    if not bg_path.is_absolute():
+        bg_path = JOBS_DIR / job_id / bg
+    if not bg_path.exists():
+        raise HTTPException(404, f"背景圖不存在: {bg}")
+    return FileResponse(str(bg_path), media_type="image/png")
 
 
 @app.get("/api/jobs/{job_id}/pages/{page_index}/source")
@@ -721,9 +767,14 @@ def page_source(job_id: str, page_index: int):
     src = pages[page_index].get("source_image")
     if isinstance(src, str) and src.startswith(("http://", "https://")):
         return RedirectResponse(url=src, status_code=307)
-    if not src or not Path(src).exists():
+    if not src:
         raise HTTPException(404, "原始圖不存在")
-    return FileResponse(src, media_type="image/png")
+    src_path = Path(src)
+    if not src_path.is_absolute():
+        src_path = JOBS_DIR / job_id / src
+    if not src_path.exists():
+        raise HTTPException(404, "原始圖不存在")
+    return FileResponse(str(src_path), media_type="image/png")
 
 
 @app.get("/api/jobs/{job_id}/pages/{page_index}/layers/{layer_index}")
@@ -742,10 +793,12 @@ def page_layer(job_id: str, page_index: int, layer_index: int):
     layer = layer_files[layer_index]
     if isinstance(layer, str) and layer.startswith(("http://", "https://")):
         return RedirectResponse(url=layer, status_code=307)
-    f = Path(layer)
-    if not f.exists():
-        raise HTTPException(404, "圖層檔不存在")
-    return FileResponse(str(f), media_type="image/png")
+    layer_path = Path(layer)
+    if not layer_path.is_absolute():
+        layer_path = JOBS_DIR / job_id / layer
+    if not layer_path.exists():
+        raise HTTPException(404, "圖層不存在")
+    return FileResponse(str(layer_path), media_type="image/png")
 
 
 @app.get("/api/jobs/{job_id}/artifacts/{artifact_path:path}")
@@ -789,6 +842,238 @@ def download_pptx(job_id: str, custom: bool = False):
 
 
 
+# ── Google OAuth 2.0 Auth Module (Synced from audioStudio) ───────────────────
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+GOOGLE_OAUTH_SCOPES = "https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email"
+GOOGLE_SESSION_COOKIE = "magiclayer_google_session"
+GOOGLE_OAUTH_STATE_COOKIE = "magiclayer_google_oauth_state"
+GOOGLE_OAUTH_NEXT_COOKIE = "magiclayer_google_oauth_next"
+GOOGLE_SESSION_COOKIE_MAX_AGE = 30 * 86400  # 30 days
+GOOGLE_OAUTH_COOKIE_MAX_AGE = 600  # 10 minutes
+
+_google_sessions: Dict[str, Dict[str, Any]] = {}
+_google_sessions_lock = threading.Lock()
+
+
+def google_oauth_enabled() -> bool:
+    return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+
+
+def missing_google_oauth_config() -> list[str]:
+    missing = []
+    if not GOOGLE_CLIENT_ID:
+        missing.append("GOOGLE_CLIENT_ID")
+    if not GOOGLE_CLIENT_SECRET:
+        missing.append("GOOGLE_CLIENT_SECRET")
+    return missing
+
+
+def sanitize_return_path(target: str) -> str:
+    if not target or not target.startswith("/") or target.startswith("//"):
+        return "/app"
+    return target
+
+
+def google_redirect_uri(request: Request) -> str:
+    configured = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+    if configured:
+        return configured
+    return str(request.url_for("google_auth_callback"))
+
+
+def google_token_request(data: dict[str, str]) -> dict[str, Any]:
+    import urllib.parse
+    import urllib.request
+
+    encoded = urllib.parse.urlencode(data).encode("utf-8")
+    req = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=encoded,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Google OAuth token request failed: {exc}") from exc
+
+
+def google_fetch_profile(access_token: str) -> dict[str, Any]:
+    import urllib.request
+
+    req = urllib.request.Request(
+        "https://www.googleapis.com/oauth2/v3/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Google profile request failed: {exc}") from exc
+
+
+def refresh_google_session(session_id: str, session: dict[str, Any]) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+    refresh_token = str(session.get("refresh_token") or "").strip()
+    if not refresh_token or not google_oauth_enabled():
+        return session_id, session
+
+    expires_at = float(session.get("expires_at") or 0.0)
+    # 如果 Access Token 還有 5 分鐘以上才過期，無須刷新
+    if expires_at - time.time() > 300:
+        return session_id, session
+
+    try:
+        tokens = google_token_request(
+            {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            }
+        )
+        new_access_token = str(tokens.get("access_token") or "").strip()
+        if new_access_token:
+            session["access_token"] = new_access_token
+            expires_in = int(tokens.get("expires_in") or 3600)
+            session["expires_at"] = time.time() + expires_in
+            if tokens.get("refresh_token"):
+                session["refresh_token"] = str(tokens.get("refresh_token")).strip()
+            with _google_sessions_lock:
+                _google_sessions[session_id] = session
+            return session_id, session
+    except Exception as err:
+        # 若 refresh 失敗（例如授權遭原廠撤銷），刪除此 Session
+        with _google_sessions_lock:
+            _google_sessions.pop(session_id, None)
+        return None, None
+
+    return session_id, session
+
+
+def resolve_google_session(request: Request) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+    session_id = str(request.cookies.get(GOOGLE_SESSION_COOKIE) or "").strip()
+    if not session_id:
+        return None, None
+    with _google_sessions_lock:
+        session = _google_sessions.get(session_id)
+        if not session:
+            return None, None
+        session_copy = dict(session)
+    return refresh_google_session(session_id, session_copy)
+
+
+@app.get("/auth/google/start")
+def google_auth_start(request: Request, next: str = "/app") -> RedirectResponse:
+    if not google_oauth_enabled():
+        raise HTTPException(503, "尚未設定 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET")
+    oauth_state = uuid.uuid4().hex
+    redirect_uri = google_redirect_uri(request)
+    target = sanitize_return_path(next)
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": GOOGLE_OAUTH_SCOPES,
+        "access_type": "offline",
+        "include_granted_scopes": "true",
+        "prompt": "consent",
+        "state": oauth_state,
+    }
+    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+    response = RedirectResponse(auth_url, status_code=307)
+    response.set_cookie(GOOGLE_OAUTH_STATE_COOKIE, oauth_state, httponly=True, samesite="lax", max_age=GOOGLE_OAUTH_COOKIE_MAX_AGE)
+    response.set_cookie(GOOGLE_OAUTH_NEXT_COOKIE, target, httponly=True, samesite="lax", max_age=GOOGLE_OAUTH_COOKIE_MAX_AGE)
+    return response
+
+
+@app.get("/auth/google/callback", name="google_auth_callback")
+def google_auth_callback(
+    request: Request,
+    state: str = "",
+    code: str = "",
+    error: str = "",
+) -> RedirectResponse:
+    next_path = sanitize_return_path(request.cookies.get(GOOGLE_OAUTH_NEXT_COOKIE) or "/app")
+    response = RedirectResponse(next_path, status_code=307)
+    response.delete_cookie(GOOGLE_OAUTH_STATE_COOKIE)
+    response.delete_cookie(GOOGLE_OAUTH_NEXT_COOKIE)
+    if error:
+        response.delete_cookie(GOOGLE_SESSION_COOKIE)
+        return response
+    expected_state = str(request.cookies.get(GOOGLE_OAUTH_STATE_COOKIE) or "").strip()
+    if not expected_state or not state or state != expected_state:
+        response.delete_cookie(GOOGLE_SESSION_COOKIE)
+        return response
+    try:
+        tokens = google_token_request(
+            {
+                "code": code,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "redirect_uri": google_redirect_uri(request),
+                "grant_type": "authorization_code",
+            }
+        )
+        access_token = str(tokens.get("access_token") or "").strip()
+        if not access_token:
+            response.delete_cookie(GOOGLE_SESSION_COOKIE)
+            return response
+        profile = google_fetch_profile(access_token)
+        session_id = str(request.cookies.get(GOOGLE_SESSION_COOKIE) or "").strip() or uuid.uuid4().hex
+        expires_in = int(tokens.get("expires_in") or 3600)
+        session_data = {
+            "sub": str(profile.get("sub") or "").strip(),
+            "name": str(profile.get("name") or "").strip(),
+            "email": str(profile.get("email") or "").strip(),
+            "picture": str(profile.get("picture") or "").strip(),
+            "access_token": access_token,
+            "refresh_token": str(tokens.get("refresh_token") or "").strip(),
+            "expires_in": expires_in,
+            "expires_at": time.time() + expires_in,
+        }
+        with _google_sessions_lock:
+            _google_sessions[session_id] = session_data
+    except Exception as oauth_err:
+        response.delete_cookie(GOOGLE_SESSION_COOKIE)
+        return response
+    response.set_cookie(GOOGLE_SESSION_COOKIE, session_id, httponly=True, samesite="lax", max_age=GOOGLE_SESSION_COOKIE_MAX_AGE)
+    return response
+
+
+@app.post("/auth/google/logout")
+def google_auth_logout(request: Request) -> JSONResponse:
+    session_id = str(request.cookies.get(GOOGLE_SESSION_COOKIE) or "").strip()
+    if session_id:
+        with _google_sessions_lock:
+            _google_sessions.pop(session_id, None)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(GOOGLE_SESSION_COOKIE)
+    return response
+
+
+@app.get("/api/auth/session")
+def google_session_info(request: Request) -> dict[str, Any]:
+    session_id, session = resolve_google_session(request)
+    if not session_id or not session:
+        return {
+            "configured": google_oauth_enabled(),
+            "authenticated": False,
+            "missing": missing_google_oauth_config(),
+        }
+    return {
+        "configured": google_oauth_enabled(),
+        "authenticated": True,
+        "missing": missing_google_oauth_config(),
+        "sub": session.get("sub", ""),
+        "name": session.get("name", ""),
+        "email": session.get("email", ""),
+        "picture": session.get("picture", ""),
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("web.backend.app:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), reload=True)
+

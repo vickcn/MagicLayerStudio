@@ -445,6 +445,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 async function loadResult(job_id) {
+  state.jobId = job_id;
   try {
     const r = await fetch(`${API}/api/jobs/${job_id}/result`);
     if (!r.ok) throw new Error('無法取得結果');
@@ -555,11 +556,6 @@ function getPageAssetUrl(pageIndex, field, assetIndex = 0) {
   const value = field === 'layer_files' ? page.layer_files?.[assetIndex] : page[field];
   if (typeof value === 'string' && /^https?:\/\//i.test(value)) return value;
 
-  if (state.uploadMode === 'gcs' && typeof value === 'string' && value) {
-    const safePath = value.split('/').map(encodeURIComponent).join('/');
-    return `${API}/api/jobs/${encodeURIComponent(state.jobId)}/artifacts/${safePath}`;
-  }
-
   if (field === 'source_image') {
     return `${API}/api/jobs/${state.jobId}/pages/${pageIndex}/source`;
   }
@@ -568,6 +564,11 @@ function getPageAssetUrl(pageIndex, field, assetIndex = 0) {
   }
   if (field === 'layer_files') {
     return `${API}/api/jobs/${state.jobId}/pages/${pageIndex}/layers/${assetIndex}`;
+  }
+
+  if (state.uploadMode === 'gcs' && typeof value === 'string' && value) {
+    const safePath = value.split('/').map(encodeURIComponent).join('/');
+    return `${API}/api/jobs/${encodeURIComponent(state.jobId)}/artifacts/${safePath}`;
   }
   return '';
 }
@@ -1614,6 +1615,35 @@ async function loadCapabilities() {
   }
 }
 
+async function autoRestoreLastJob() {
+  const urlParams = new URLSearchParams(window.location.search);
+  let targetJobId = urlParams.get('job_id');
+  if (!targetJobId) {
+    try {
+      const res = await fetch(`${API}/api/jobs`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.jobs && data.jobs.length > 0) {
+          targetJobId = data.jobs[0].job_id;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to fetch existing jobs list:', e);
+    }
+  }
+
+  if (targetJobId) {
+    try {
+      await loadResult(targetJobId);
+      history.replaceState(null, '', `?job_id=${targetJobId}`);
+    } catch (e) {
+      console.warn('Auto restore job failed:', e);
+    }
+  }
+}
+
 document.body.setAttribute('aria-busy', 'false');
-loadCapabilities();
+loadCapabilities().then(() => {
+  autoRestoreLastJob();
+});
 syncDisabledControls();

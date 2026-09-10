@@ -39,3 +39,6 @@ storage*/*
 samples*/*
 !README.md
 .vercel
+node_modules/
+web/frontend/fonts/
+
