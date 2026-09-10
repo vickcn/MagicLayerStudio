@@ -386,6 +386,22 @@ def start_processing(
 def job_status(job_id: str):
     job = _get_job(job_id)
     if not job:
+        # Vercel instances are ephemeral. Remote Core owns the durable record,
+        # so a cold/replaced Studio instance can still resume polling by ID.
+        if BACKEND.name == "core_api":
+            try:
+                remote = BACKEND.get_status(job_id)
+            except Exception as exc:
+                raise HTTPException(502, "Core 狀態服務暫時無法使用") from exc
+            status = {"queued": "pending", "running": "running", "completed": "done", "failed": "error", "cancelled": "error"}.get(remote.get("status", "queued"), "pending")
+            return {
+                "job_id": job_id,
+                "status": status,
+                "progress": remote.get("progress_text") or "處理中…",
+                "filename": None,
+                "params": None,
+                "size_mb": None,
+            }
         raise HTTPException(404, "找不到此工作")
     if job.get("remote_job_id") and BACKEND.name == "core_api":
         try:
@@ -410,6 +426,12 @@ def job_status(job_id: str):
 def cancel_job(job_id: str) -> Dict[str, Any]:
     job = _get_job(job_id)
     if not job:
+        if BACKEND.name == "core_api":
+            try:
+                remote = BACKEND.cancel_remote_job(job_id)
+            except Exception as exc:
+                raise HTTPException(502, "Core 中止服務暫時無法使用") from exc
+            return {"job_id": job_id, "status": remote.get("status", "cancelled")}
         raise HTTPException(404, "找不到此工作")
     if not job.get("remote_job_id") or BACKEND.name != "core_api":
         raise HTTPException(409, "目前只支援中止遠端 Core 工作")
@@ -425,6 +447,18 @@ def cancel_job(job_id: str) -> Dict[str, Any]:
 def job_result(job_id: str):
     job = _get_job(job_id)
     if not job:
+        if BACKEND.name == "core_api":
+            try:
+                remote_result = BACKEND.get_result(job_id)
+            except Exception as exc:
+                raise HTTPException(502, "Core 結果服務暫時無法使用") from exc
+            return {
+                "job_id": job_id,
+                "pages": remote_result.get("pages", []),
+                "rebuilt_pptx": remote_result.get("rebuilt_pptx"),
+                "custom_edits": {},
+                "size_mb": None,
+            }
         raise HTTPException(404, "找不到此工作")
     if job.get("status") != "done":
         raise HTTPException(425, f"尚未完成：{job.get('status')}")
@@ -462,6 +496,12 @@ def delete_job(job_id: str):
     """刪除工作及所有暫存檔，釋放磁碟空間。"""
     job = _get_job(job_id)
     if not job:
+        if BACKEND.name == "core_api":
+            try:
+                BACKEND.delete_remote_job(job_id)
+            except Exception as exc:
+                raise HTTPException(502, "Core 清理服務暫時無法使用") from exc
+            return {"deleted": job_id}
         raise HTTPException(404, "找不到此工作")
     if job.get("status") == "running":
         raise HTTPException(409, "處理中，無法刪除")
