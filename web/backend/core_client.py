@@ -48,6 +48,9 @@ class MagicLayerCoreClient:
     def delete_job(self, job_id: str) -> dict:
         return self._json_request(f"v1/jobs/{quote(job_id, safe='')}", method="DELETE")
 
+    def cancel_job(self, job_id: str) -> dict:
+        return self._json_request(f"v1/jobs/{quote(job_id, safe='')}/cancel")
+
     def result(self, job_id: str) -> dict:
         status = self.get_job(job_id)
         pages = []

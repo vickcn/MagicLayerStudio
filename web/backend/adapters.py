@@ -58,6 +58,9 @@ class RemoteCoreBackend:
     def delete_remote_job(self, job_id: str) -> dict:
         return self.client.delete_job(job_id)
 
+    def cancel_remote_job(self, job_id: str) -> dict:
+        return self.client.cancel_job(job_id)
+
 
 def create_backend(mode: str, core_url: str, core_token: str = ""):
     normalized = mode.strip().lower().replace("-", "_")

@@ -393,7 +393,7 @@ def job_status(job_id: str):
         except Exception as exc:
             raise HTTPException(502, "Core 狀態服務暫時無法使用") from exc
         remote_status = remote.get("status", "queued")
-        status = {"queued": "pending", "running": "running", "completed": "done", "failed": "error"}.get(remote_status, "pending")
+        status = {"queued": "pending", "running": "running", "completed": "done", "failed": "error", "cancelled": "error"}.get(remote_status, "pending")
         _set_job(job_id, status=status, progress=remote.get("progress_text") or "處理中…", error=remote.get("error"))
         job = _get_job(job_id) or job
     return {
@@ -404,6 +404,21 @@ def job_status(job_id: str):
         "params": job.get("params"),
         "size_mb": job.get("size_mb"),
     }
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> Dict[str, Any]:
+    job = _get_job(job_id)
+    if not job:
+        raise HTTPException(404, "找不到此工作")
+    if not job.get("remote_job_id") or BACKEND.name != "core_api":
+        raise HTTPException(409, "目前只支援中止遠端 Core 工作")
+    try:
+        remote = BACKEND.cancel_remote_job(job["remote_job_id"])
+    except Exception as exc:
+        raise HTTPException(502, "Core 中止服務暫時無法使用") from exc
+    _set_job(job_id, status="error", progress="已要求 Core 中止處理", error="cancelled")
+    return {"job_id": job_id, "status": remote.get("status", "cancelled")}
 
 
 @app.get("/api/jobs/{job_id}/result")

@@ -11,6 +11,7 @@ const state = {
   capabilitiesReady: false,
   status: 'idle',  // idle | uploading | processing | done | error
   isBusy: false,
+  isCancelling: false,
   pollFailures: 0,
   pages: [],
   selectedPageIndex: 0,
@@ -42,6 +43,7 @@ const $fileInfo        = $('file-info');
 const $fileName        = $('file-name');
 const $btnRemove       = $('btn-remove-file');
 const $btnProcess      = $('btn-process');
+const $btnCancelProcess = $('btn-cancel-process');
 const $progressWrap    = $('progress-wrap');
 const $progressBar     = $('progress-bar');
 const $statusText      = $('status-text');
@@ -151,6 +153,9 @@ function syncDisabledControls() {
   $fileInput.disabled = busy;
   $btnRemove.disabled = busy || !state.file;
   $btnProcess.disabled = busy || !state.file || !state.capabilitiesReady;
+  const canCancel = state.uploadMode === 'gcs' && state.jobId && state.status === 'processing';
+  $btnCancelProcess.classList.toggle('hidden', !canCancel);
+  $btnCancelProcess.disabled = !canCancel || state.isCancelling;
   $btnReprocess.disabled = busy || !state.file;
   $btnDownload.disabled = busy || !state.jobId;
   $btnDeleteJob.disabled = busy || !state.jobId;
@@ -242,6 +247,37 @@ function clearFile() {
 // ── Process ───────────────────────────────────────────────────────────────────
 $btnProcess.addEventListener('click', startProcess);
 $btnReprocess.addEventListener('click', startProcess);
+$btnCancelProcess.addEventListener('click', cancelProcess);
+
+async function cancelProcess() {
+  if (!state.jobId || state.uploadMode !== 'gcs' || state.isCancelling) return;
+  const ok = await confirmAction({
+    title: '中止圖層分析？',
+    message: '系統會通知 MagicLayerCore 停止此工作；目前正在執行的單一步驟會完成收尾後釋放資源。',
+    confirmLabel: '中止處理',
+    danger: true,
+  });
+  if (!ok) return;
+
+  state.isCancelling = true;
+  syncDisabledControls();
+  $statusText.textContent = '正在通知 Core 中止處理…';
+  try {
+    const r = await fetch(`${API}/api/jobs/${encodeURIComponent(state.jobId)}/cancel`, { method: 'POST' });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ detail: '中止失敗' }));
+      throw new Error(err.detail || '中止失敗');
+    }
+    stopPolling();
+    setStatus('error', '已通知 MagicLayerCore 中止處理。');
+    toast('已通知 Core 中止處理', 'success');
+  } catch (err) {
+    toast(err.message || '中止失敗', 'error');
+  } finally {
+    state.isCancelling = false;
+    syncDisabledControls();
+  }
+}
 
 async function startProcess() {
   if (!state.file || state.isBusy) return;
@@ -472,6 +508,7 @@ function resetResults() {
   state.undoStack = [];
   state.redoStack = [];
   state.pollFailures = 0;
+  state.isCancelling = false;
   $pagesEmpty.classList.remove('hidden');
   $pagesGrid.classList.add('hidden');
   $pagesGrid.innerHTML = '';
