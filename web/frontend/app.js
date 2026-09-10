@@ -300,7 +300,7 @@ async function startProcess() {
           size: state.file.size,
         }),
       });
-      if (!prepareRes.ok) throw new Error('無法準備安全上傳');
+      if (!prepareRes.ok) throw new Error(await getApiErrorMessage(prepareRes, '無法準備安全上傳'));
       const prepared = await prepareRes.json();
 
       const putRes = await fetch(prepared.upload_url, {
@@ -315,7 +315,7 @@ async function startProcess() {
         headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ options: params, filename: state.file.name, size: state.file.size }),
       });
-      if (!completeRes.ok) throw new Error('Core 未能確認上傳檔案');
+      if (!completeRes.ok) throw new Error(await getApiErrorMessage(completeRes, 'Core 未能確認上傳檔案'));
       ({ job_id } = await completeRes.json());
     } else {
       const fd = new FormData();
@@ -346,6 +346,15 @@ async function startProcess() {
     setBusy(false);
     toast(e.message, 'error');
   }
+}
+
+async function getApiErrorMessage(response, fallback) {
+  const payload = await response.json().catch(() => null);
+  const detail = payload?.detail;
+  if (detail && typeof detail === 'object' && typeof detail.message === 'string') {
+    return detail.message;
+  }
+  return typeof detail === 'string' && detail ? detail : fallback;
 }
 
 let _pollTimer = null;
@@ -545,6 +554,11 @@ function getPageAssetUrl(pageIndex, field, assetIndex = 0) {
   const page = state.pages[pageIndex] || {};
   const value = field === 'layer_files' ? page.layer_files?.[assetIndex] : page[field];
   if (typeof value === 'string' && /^https?:\/\//i.test(value)) return value;
+
+  if (state.uploadMode === 'gcs' && typeof value === 'string' && value) {
+    const safePath = value.split('/').map(encodeURIComponent).join('/');
+    return `${API}/api/jobs/${encodeURIComponent(state.jobId)}/artifacts/${safePath}`;
+  }
 
   if (field === 'source_image') {
     return `${API}/api/jobs/${state.jobId}/pages/${pageIndex}/source`;

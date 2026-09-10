@@ -6,7 +6,22 @@ import time
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, urljoin
-from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+
+
+class CoreRequestError(RuntimeError):
+    """A sanitized Core failure suitable for translating at the Studio boundary."""
+
+    def __init__(self, status_code: int, code: str = "core_request_failed") -> None:
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
 
 
 class MagicLayerCoreClient:
@@ -19,7 +34,22 @@ class MagicLayerCoreClient:
         request_headers = dict(headers or {})
         if self.token:
             request_headers["Authorization"] = f"Bearer {self.token}"
-        return urlopen(Request(url, data=data, headers=request_headers, method=method), timeout=self.timeout)
+        try:
+            return urlopen(Request(url, data=data, headers=request_headers, method=method), timeout=self.timeout)
+        except HTTPError as error:
+            raise CoreRequestError(error.code, self._error_code(error)) from error
+
+    @staticmethod
+    def _error_code(error: HTTPError) -> str:
+        """Read only the structured public error code; never re-emit server text."""
+        try:
+            payload = json.loads(error.read().decode("utf-8"))
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+            if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+                return detail["code"]
+        except Exception:
+            pass
+        return "core_request_failed"
 
     def _json_request(self, path: str, payload=None, method="POST") -> dict:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -51,36 +81,40 @@ class MagicLayerCoreClient:
     def cancel_job(self, job_id: str) -> dict:
         return self._json_request(f"v1/jobs/{quote(job_id, safe='')}/cancel")
 
+    def artifact_redirect(self, job_id: str, relative_path: str) -> Optional[str]:
+        """Resolve Core's authenticated artifact endpoint to a signed GCS URL."""
+        if not relative_path or relative_path.startswith("/") or ".." in Path(relative_path).parts:
+            return None
+        url = urljoin(
+            self.base_url,
+            f"v1/jobs/{quote(job_id, safe='')}/artifacts/{quote(relative_path, safe='/')}",
+        )
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        try:
+            response = build_opener(_NoRedirect()).open(
+                Request(url, headers=headers, method="GET"), timeout=self.timeout
+            )
+        except HTTPError as error:
+            if error.code not in {301, 302, 303, 307, 308}:
+                raise CoreRequestError(error.code, self._error_code(error)) from error
+            location = error.headers.get("Location")
+            return location if location and location.startswith("https://") else None
+        location = response.headers.get("Location")
+        return location if location and location.startswith("https://") else None
+
     def result(self, job_id: str) -> dict:
         status = self.get_job(job_id)
         pages = []
         for page in status.get("pages", []):
-            page_id = page.get("page_id", "")
-            files = page.get("files", [])
             page_data = dict(page)
-
-            def artifact_url(relative: Optional[str]) -> Optional[str]:
-                if not relative:
-                    return None
-                return urljoin(
-                    self.base_url,
-                    f"v1/jobs/{quote(job_id, safe='')}/artifacts/{quote(relative, safe='/')}",
-                )
-
-            page_data["source_image"] = artifact_url(page.get("source_image"))
-            page_data["background"] = artifact_url(page.get("background"))
-            page_data["layers_json"] = artifact_url(page.get("layers_json"))
-            page_data["objects_json"] = artifact_url(page.get("objects_json"))
-            page_data["layer_files"] = [artifact_url(path) for path in page.get("layer_files", [])]
             page_data["output_dir"] = None
-            page_data["layer_count"] = len(page_data["layer_files"])
+            page_data["layer_count"] = len(page_data.get("layer_files") or [])
             pages.append(page_data)
 
-        rebuilt_pptx = artifact_url_for(self.base_url, job_id, status.get("rebuilt_pptx"))
         return {
             "job_id": job_id,
             "pages": pages,
-            "rebuilt_pptx": rebuilt_pptx,
+            "rebuilt_pptx": status.get("rebuilt_pptx"),
             "size_mb": None,
         }
 

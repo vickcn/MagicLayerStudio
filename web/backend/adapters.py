@@ -61,6 +61,9 @@ class RemoteCoreBackend:
     def cancel_remote_job(self, job_id: str) -> dict:
         return self.client.cancel_job(job_id)
 
+    def artifact_redirect(self, job_id: str, relative_path: str) -> Optional[str]:
+        return self.client.artifact_redirect(job_id, relative_path)
+
 
 def create_backend(mode: str, core_url: str, core_token: str = ""):
     normalized = mode.strip().lower().replace("-", "_")

@@ -36,6 +36,7 @@ import sys
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from web.backend.adapters import create_backend
+from web.backend.core_client import CoreRequestError
 
 STUDIO_BACKEND = os.environ.get("STUDIO_BACKEND", os.environ.get("SUBMODULE_BACKEND", "local"))
 MAGICLAYER_CORE_URL = os.environ.get("MAGICLAYER_CORE_URL", "")
@@ -134,6 +135,71 @@ def _cleanup_expired_jobs():
 def _dir_size_mb(path: Path) -> float:
     total = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
     return round(total / 1024 / 1024, 1)
+
+
+def _core_http_error(error: Exception, operation: str) -> HTTPException:
+    """Translate Core failures without reflecting worker internals to browsers."""
+    status_code = error.status_code if isinstance(error, CoreRequestError) else getattr(error, "code", 502)
+    if operation == "complete_upload" and status_code == 404:
+        detail = {
+            "code": "upload_not_found",
+            "message": "上傳暫存已失效或找不到，請重新上傳。",
+            "retryable": False,
+        }
+        return HTTPException(status_code=404, detail=detail)
+    if operation == "complete_upload" and status_code == 400:
+        detail = {
+            "code": "upload_validation_failed",
+            "message": "上傳檔案驗證失敗，請重新選擇檔案。",
+            "retryable": False,
+        }
+        return HTTPException(status_code=400, detail=detail)
+    if operation == "complete_upload":
+        detail = {
+            "code": "core_job_state_unavailable",
+            "message": "Core 暫時無法建立工作狀態，請稍後重試。",
+            "retryable": True,
+        }
+        return HTTPException(status_code=503, detail=detail)
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "core_unavailable",
+            "message": "Core 服務暫時無法使用，請稍後重試。",
+            "retryable": True,
+        },
+    )
+
+
+def _remote_artifact_redirect(job_id: str, relative_path: str):
+    if BACKEND.name != "core_api":
+        raise HTTPException(404, "遠端檔案服務未啟用")
+    try:
+        signed_url = BACKEND.artifact_redirect(job_id, relative_path)
+    except Exception as exc:
+        raise _core_http_error(exc, "artifact") from exc
+    if not signed_url:
+        raise HTTPException(404, "檔案不存在或已過期")
+    return RedirectResponse(url=signed_url, status_code=307)
+
+
+def _remote_page_asset_redirect(job_id: str, page_index: int, field: str, layer_index: int = 0):
+    try:
+        result = BACKEND.get_result(job_id)
+    except Exception as exc:
+        raise _core_http_error(exc, "result") from exc
+    pages = result.get("pages") or []
+    if page_index < 0 or page_index >= len(pages):
+        raise HTTPException(404, "找不到此頁")
+    page = pages[page_index]
+    if field == "layer_files":
+        layer_files = page.get("layer_files") or []
+        value = layer_files[layer_index] if 0 <= layer_index < len(layer_files) else None
+    else:
+        value = page.get(field)
+    if not isinstance(value, str) or not value:
+        raise HTTPException(404, "檔案不存在")
+    return _remote_artifact_redirect(job_id, value)
 
 
 def _run_pipeline(job_id: str, input_path: Path, output_dir: Path, options: PipelineOptions):
@@ -305,7 +371,7 @@ def prepare_remote_upload(payload: Dict[str, Any]):
             payload.get("size"),
         )
     except Exception as exc:
-        raise HTTPException(502, "Core 上傳服務暫時無法使用") from exc
+        raise _core_http_error(exc, "prepare_upload") from exc
 
 
 @app.post("/api/upload/{upload_id}/complete")
@@ -321,7 +387,7 @@ def complete_remote_upload(upload_id: str, payload: Dict[str, Any]):
             payload.get("size"),
         )
     except Exception as exc:
-        raise HTTPException(502, "Core 處理服務暫時無法使用") from exc
+        raise _core_http_error(exc, "complete_upload") from exc
 
     job_id = core_job["job_id"]
     _set_job(
@@ -626,6 +692,8 @@ def cleanup_all_expired():
 
 @app.get("/api/jobs/{job_id}/pages/{page_index}/background")
 def page_background(job_id: str, page_index: int):
+    if BACKEND.name == "core_api":
+        return _remote_page_asset_redirect(job_id, page_index, "background")
     job = _get_job(job_id)
     if not job or job.get("status") != "done":
         raise HTTPException(404, "資料尚未就緒")
@@ -642,6 +710,8 @@ def page_background(job_id: str, page_index: int):
 
 @app.get("/api/jobs/{job_id}/pages/{page_index}/source")
 def page_source(job_id: str, page_index: int):
+    if BACKEND.name == "core_api":
+        return _remote_page_asset_redirect(job_id, page_index, "source_image")
     job = _get_job(job_id)
     if not job or job.get("status") != "done":
         raise HTTPException(404, "資料尚未就緒")
@@ -658,6 +728,8 @@ def page_source(job_id: str, page_index: int):
 
 @app.get("/api/jobs/{job_id}/pages/{page_index}/layers/{layer_index}")
 def page_layer(job_id: str, page_index: int, layer_index: int):
+    if BACKEND.name == "core_api":
+        return _remote_page_asset_redirect(job_id, page_index, "layer_files", layer_index)
     job = _get_job(job_id)
     if not job or job.get("status") != "done":
         raise HTTPException(404, "資料尚未就緒")
@@ -676,8 +748,25 @@ def page_layer(job_id: str, page_index: int, layer_index: int):
     return FileResponse(str(f), media_type="image/png")
 
 
+@app.get("/api/jobs/{job_id}/artifacts/{artifact_path:path}")
+def remote_artifact(job_id: str, artifact_path: str):
+    """BFF-only redirect: browser receives a short-lived GCS URL, never a Core token."""
+    return _remote_artifact_redirect(job_id, artifact_path)
+
+
 @app.get("/api/jobs/{job_id}/download")
 def download_pptx(job_id: str, custom: bool = False):
+    if BACKEND.name == "core_api":
+        if custom:
+            raise HTTPException(409, "遠端工作尚不支援儲存自訂編輯版")
+        try:
+            result = BACKEND.get_result(job_id)
+        except Exception as exc:
+            raise _core_http_error(exc, "result") from exc
+        rebuilt_pptx = result.get("rebuilt_pptx")
+        if not isinstance(rebuilt_pptx, str) or not rebuilt_pptx:
+            raise HTTPException(404, "PPTX 尚未產生")
+        return _remote_artifact_redirect(job_id, rebuilt_pptx)
     job = _get_job(job_id)
     if not job or job.get("status") != "done":
         raise HTTPException(404, "資料尚未就緒")
