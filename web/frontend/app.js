@@ -13,6 +13,7 @@ const state = {
   isBusy: false,
   isCancelling: false,
   pollFailures: 0,
+  pollAttempt: 0,
   pages: [],
   selectedPageIndex: 0,
   selectedView: 'editor',  // editor | source | background | layer
@@ -351,19 +352,24 @@ let _pollTimer = null;
 let _pollInFlight = false;
 const QUEUE_POLL_OFFLINE_THRESHOLD = 1;
 const QUEUE_POLL_MAX_FAILURES = 2;
-const QUEUE_POLL_INTERVAL_MS = 1500;
 
 function stopPolling() {
-  if (_pollTimer) clearInterval(_pollTimer);
+  if (_pollTimer) clearTimeout(_pollTimer);
   _pollTimer = null;
   _pollInFlight = false;
 }
 
+const ACTIVE_POLL_BACKOFF_MS = [60_000, 120_000, 240_000, 480_000, 600_000];
+const RECONNECT_POLL_MS = 15_000;
+
 function pollStatus(job_id) {
   stopPolling();
-  _pollTimer = setInterval(async () => {
+  state.pollAttempt = 0;
+
+  const runPoll = async () => {
     if (_pollInFlight) return;
     _pollInFlight = true;
+    let shouldContinue = true;
     try {
       const r = await fetch(`${API}/api/jobs/${job_id}/status`);
       if (!r.ok) {
@@ -376,19 +382,20 @@ function pollStatus(job_id) {
         toast('已重新連上服務，繼續更新處理狀態', 'success');
       }
       state.pollFailures = 0;
+      state.pollAttempt += 1;
       $statusText.textContent = data.progress || '處理中…';
 
       if (data.status === 'done') {
-        stopPolling();
+        shouldContinue = false;
         await loadResult(job_id);
       } else if (data.status === 'error') {
-        stopPolling();
+        shouldContinue = false;
         setStatus('error', data.progress || '處理失敗');
         toast(data.progress || '處理失敗', 'error');
       }
     } catch (err) {
       if (err.stopPolling) {
-        stopPolling();
+        shouldContinue = false;
         const message = err.message.includes('401')
           ? '工作驗證已失效，請重新上傳。'
           : '找不到這個工作，請重新上傳。';
@@ -404,16 +411,29 @@ function pollStatus(job_id) {
         setBusy(false);
       }
       if (state.pollFailures >= QUEUE_POLL_MAX_FAILURES) {
-        stopPolling();
+        shouldContinue = false;
         const message = '服務暫時無法連線，已停止重試，請稍後再試。';
         setStatus('error', message);
         toast(message, 'error');
       }
     } finally {
       _pollInFlight = false;
+      if (shouldContinue && state.jobId === job_id && !document.hidden) {
+        const delay = state.pollFailures >= QUEUE_POLL_OFFLINE_THRESHOLD
+          ? RECONNECT_POLL_MS
+          : ACTIVE_POLL_BACKOFF_MS[Math.min(state.pollAttempt, ACTIVE_POLL_BACKOFF_MS.length - 1)];
+        _pollTimer = setTimeout(runPoll, delay);
+      }
     }
-  }, QUEUE_POLL_INTERVAL_MS);
+  };
+
+  runPoll();
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !state.jobId || state.status !== 'processing') return;
+  pollStatus(state.jobId);
+});
 
 async function loadResult(job_id) {
   try {
@@ -508,6 +528,7 @@ function resetResults() {
   state.undoStack = [];
   state.redoStack = [];
   state.pollFailures = 0;
+  state.pollAttempt = 0;
   state.isCancelling = false;
   $pagesEmpty.classList.remove('hidden');
   $pagesGrid.classList.add('hidden');
