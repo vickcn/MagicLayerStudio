@@ -312,13 +312,29 @@ async function startProcess() {
 }
 
 let _pollTimer = null;
-const QUEUE_POLL_OFFLINE_THRESHOLD = 2;
-function pollStatus(job_id) {
+let _pollInFlight = false;
+const QUEUE_POLL_OFFLINE_THRESHOLD = 1;
+const QUEUE_POLL_MAX_FAILURES = 2;
+const QUEUE_POLL_INTERVAL_MS = 1500;
+
+function stopPolling() {
   if (_pollTimer) clearInterval(_pollTimer);
+  _pollTimer = null;
+  _pollInFlight = false;
+}
+
+function pollStatus(job_id) {
+  stopPolling();
   _pollTimer = setInterval(async () => {
+    if (_pollInFlight) return;
+    _pollInFlight = true;
     try {
       const r = await fetch(`${API}/api/jobs/${job_id}/status`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) {
+        const err = new Error(`HTTP ${r.status}`);
+        err.stopPolling = r.status === 401 || r.status === 404;
+        throw err;
+      }
       const data = await r.json();
       if (state.pollFailures > 0) {
         toast('已重新連上服務，繼續更新處理狀態', 'success');
@@ -327,23 +343,40 @@ function pollStatus(job_id) {
       $statusText.textContent = data.progress || '處理中…';
 
       if (data.status === 'done') {
-        clearInterval(_pollTimer);
+        stopPolling();
         await loadResult(job_id);
       } else if (data.status === 'error') {
-        clearInterval(_pollTimer);
+        stopPolling();
         setStatus('error', data.progress || '處理失敗');
         toast(data.progress || '處理失敗', 'error');
       }
     } catch (err) {
+      if (err.stopPolling) {
+        stopPolling();
+        const message = err.message.includes('401')
+          ? '工作驗證已失效，請重新上傳。'
+          : '找不到這個工作，請重新上傳。';
+        setStatus('error', message);
+        toast(message, 'error');
+        return;
+      }
       state.pollFailures += 1;
       console.error('status polling failed', err);
       if (state.pollFailures >= QUEUE_POLL_OFFLINE_THRESHOLD) {
-        $statusText.textContent = '服務連線中斷，仍會自動重試。';
+        $statusText.textContent = `服務連線中斷，正在重試（${state.pollFailures}/${QUEUE_POLL_MAX_FAILURES}）。`;
         $statusText.classList.add('error');
         setBusy(false);
       }
+      if (state.pollFailures >= QUEUE_POLL_MAX_FAILURES) {
+        stopPolling();
+        const message = '服務暫時無法連線，已停止重試，請稍後再試。';
+        setStatus('error', message);
+        toast(message, 'error');
+      }
+    } finally {
+      _pollInFlight = false;
     }
-  }, 1500);
+  }, QUEUE_POLL_INTERVAL_MS);
 }
 
 async function loadResult(job_id) {
@@ -445,7 +478,7 @@ function resetResults() {
   $pagesCount.textContent = '0 頁';
   $pageDetail.classList.add('hidden');
   $actionBar.classList.add('hidden');
-  if (_pollTimer) clearInterval(_pollTimer);
+  stopPolling();
   setStatus('idle');
   updateDraftControls();
 }
