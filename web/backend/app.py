@@ -41,6 +41,10 @@ STUDIO_BACKEND = os.environ.get("STUDIO_BACKEND", os.environ.get("SUBMODULE_BACK
 MAGICLAYER_CORE_URL = os.environ.get("MAGICLAYER_CORE_URL", "")
 MAGICLAYER_CORE_TOKEN = os.environ.get("MAGICLAYER_CORE_TOKEN", "")
 BACKEND = create_backend(STUDIO_BACKEND, MAGICLAYER_CORE_URL, MAGICLAYER_CORE_TOKEN)
+UPLOAD_MODE = os.environ.get(
+    "STUDIO_UPLOAD_MODE",
+    "gcs" if os.environ.get("VERCEL") and BACKEND.name == "core_api" else "local",
+).strip().lower()
 
 # ── Concurrency control ───────────────────────────────────────────────────────
 # 同時最多處理 N 個任務，避免壓垮系統（Cloud Run 可透過環境變數調整）
@@ -217,7 +221,7 @@ def _restore_jobs_from_disk():
 def _persist_job_meta(job_id: str):
     """把 job 狀態寫到磁碟，供重啟後恢復。"""
     job = _get_job(job_id)
-    if not job:
+    if not job or job.get("remote_job_id"):
         return
     try:
         meta_file = JOBS_DIR / job_id / "meta.json"
@@ -241,14 +245,21 @@ def health():
     with _jobs_lock:
         total = len(_jobs)
         running = sum(1 for j in _jobs.values() if j.get("status") == "running")
-    return {
+    result = {
         "status": "ok",
         "jobs_total": total,
         "jobs_running": running,
         "max_concurrent": MAX_CONCURRENT_JOBS,
         "slots_available": _pipeline_semaphore._value,
         "backend": BACKEND.name,
+        "upload_mode": UPLOAD_MODE,
     }
+    if BACKEND.name == "core_api":
+        try:
+            result["core_health"] = BACKEND.health().get("status")
+        except Exception:
+            result["core_health"] = "unreachable"
+    return result
 
 
 @app.post("/api/upload")
@@ -277,6 +288,52 @@ async def upload_file(file: UploadFile = File(...)):
     )
     _persist_job_meta(job_id)
     return {"job_id": job_id, "filename": file.filename}
+
+
+@app.post("/api/upload/prepare")
+def prepare_remote_upload(payload: Dict[str, Any]):
+    """Request a short-lived Core/GCS upload URL without receiving file bytes."""
+    if UPLOAD_MODE != "gcs" or BACKEND.name != "core_api":
+        raise HTTPException(404, "目前環境使用本機上傳流程")
+    filename = str(payload.get("filename") or "")
+    if not filename:
+        raise HTTPException(400, "缺少檔案名稱")
+    try:
+        return BACKEND.prepare_upload(
+            filename,
+            str(payload.get("content_type") or "application/octet-stream"),
+            payload.get("size"),
+        )
+    except Exception as exc:
+        raise HTTPException(502, "Core 上傳服務暫時無法使用") from exc
+
+
+@app.post("/api/upload/{upload_id}/complete")
+def complete_remote_upload(upload_id: str, payload: Dict[str, Any]):
+    """Tell Core to verify the GCS object and start the heavy job."""
+    if UPLOAD_MODE != "gcs" or BACKEND.name != "core_api":
+        raise HTTPException(404, "目前環境使用本機上傳流程")
+    try:
+        core_job = BACKEND.complete_upload(
+            upload_id,
+            payload.get("options") or {},
+            payload.get("filename"),
+            payload.get("size"),
+        )
+    except Exception as exc:
+        raise HTTPException(502, "Core 處理服務暫時無法使用") from exc
+
+    job_id = core_job["job_id"]
+    _set_job(
+        job_id,
+        status="pending",
+        progress="已上傳至安全暫存，等待 Core 分析",
+        filename=payload.get("filename") or "uploaded file",
+        remote_job_id=job_id,
+        created_at=time.time(),
+        params=payload.get("options") or {},
+    )
+    return {"job_id": job_id, "status": "started"}
 
 
 @app.post("/api/process/{job_id}")
@@ -330,6 +387,15 @@ def job_status(job_id: str):
     job = _get_job(job_id)
     if not job:
         raise HTTPException(404, "找不到此工作")
+    if job.get("remote_job_id") and BACKEND.name == "core_api":
+        try:
+            remote = BACKEND.get_status(job["remote_job_id"])
+        except Exception as exc:
+            raise HTTPException(502, "Core 狀態服務暫時無法使用") from exc
+        remote_status = remote.get("status", "queued")
+        status = {"queued": "pending", "running": "running", "completed": "done", "failed": "error"}.get(remote_status, "pending")
+        _set_job(job_id, status=status, progress=remote.get("progress_text") or "處理中…", error=remote.get("error"))
+        job = _get_job(job_id) or job
     return {
         "job_id": job_id,
         "status": job.get("status"),
@@ -347,6 +413,14 @@ def job_result(job_id: str):
         raise HTTPException(404, "找不到此工作")
     if job.get("status") != "done":
         raise HTTPException(425, f"尚未完成：{job.get('status')}")
+
+    if job.get("remote_job_id") and BACKEND.name == "core_api":
+        try:
+            remote_result = BACKEND.get_result(job["remote_job_id"])
+        except Exception as exc:
+            raise HTTPException(502, "Core 結果服務暫時無法使用") from exc
+        _set_job(job_id, pages=remote_result.get("pages", []), rebuilt_pptx=remote_result.get("rebuilt_pptx"))
+        job = _get_job(job_id) or job
 
     # 讀取已存在的 custom_edits
     custom_edits = job.get("custom_edits")
@@ -376,6 +450,11 @@ def delete_job(job_id: str):
         raise HTTPException(404, "找不到此工作")
     if job.get("status") == "running":
         raise HTTPException(409, "處理中，無法刪除")
+    if job.get("remote_job_id") and BACKEND.name == "core_api":
+        try:
+            BACKEND.delete_remote_job(job["remote_job_id"])
+        except Exception as exc:
+            raise HTTPException(502, "Core 清理服務暫時無法使用") from exc
     _delete_job_data(job_id)
     return {"deleted": job_id}
 
@@ -499,6 +578,8 @@ def page_background(job_id: str, page_index: int):
     if page_index >= len(pages):
         raise HTTPException(404, "找不到此頁")
     bg = pages[page_index].get("background")
+    if isinstance(bg, str) and bg.startswith(("http://", "https://")):
+        return RedirectResponse(url=bg, status_code=307)
     if not bg or not Path(bg).exists():
         raise HTTPException(404, "背景圖不存在")
     return FileResponse(bg, media_type="image/png")
@@ -513,6 +594,8 @@ def page_source(job_id: str, page_index: int):
     if page_index >= len(pages):
         raise HTTPException(404, "找不到此頁")
     src = pages[page_index].get("source_image")
+    if isinstance(src, str) and src.startswith(("http://", "https://")):
+        return RedirectResponse(url=src, status_code=307)
     if not src or not Path(src).exists():
         raise HTTPException(404, "原始圖不存在")
     return FileResponse(src, media_type="image/png")
@@ -529,7 +612,10 @@ def page_layer(job_id: str, page_index: int, layer_index: int):
     layer_files = pages[page_index].get("layer_files", [])
     if layer_index >= len(layer_files):
         raise HTTPException(404, "找不到此圖層")
-    f = Path(layer_files[layer_index])
+    layer = layer_files[layer_index]
+    if isinstance(layer, str) and layer.startswith(("http://", "https://")):
+        return RedirectResponse(url=layer, status_code=307)
+    f = Path(layer)
     if not f.exists():
         raise HTTPException(404, "圖層檔不存在")
     return FileResponse(str(f), media_type="image/png")
@@ -546,6 +632,8 @@ def download_pptx(job_id: str, custom: bool = False):
     else:
         pptx = job.get("rebuilt_pptx")
 
+    if isinstance(pptx, str) and pptx.startswith(("http://", "https://")):
+        return RedirectResponse(url=pptx, status_code=307)
     if not pptx or not Path(pptx).exists():
         raise HTTPException(404, "PPTX 尚未產生")
     filename = Path(job["filename"]).stem + ("_custom" if custom else "_rebuilt") + ".pptx"

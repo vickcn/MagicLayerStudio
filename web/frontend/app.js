@@ -7,6 +7,8 @@ const API = '';  // 後端同 origin
 const state = {
   file: null,
   jobId: null,
+  uploadMode: null, // local | gcs；由後端能力檢查決定
+  capabilitiesReady: false,
   status: 'idle',  // idle | uploading | processing | done | error
   isBusy: false,
   pollFailures: 0,
@@ -148,7 +150,7 @@ function syncDisabledControls() {
   const busy = state.isBusy;
   $fileInput.disabled = busy;
   $btnRemove.disabled = busy || !state.file;
-  $btnProcess.disabled = busy || !state.file;
+  $btnProcess.disabled = busy || !state.file || !state.capabilitiesReady;
   $btnReprocess.disabled = busy || !state.file;
   $btnDownload.disabled = busy || !state.jobId;
   $btnDeleteJob.disabled = busy || !state.jobId;
@@ -249,24 +251,56 @@ async function startProcess() {
   setBusy(true, '正在上傳檔案', '檔案上傳後會立即開始分析圖層。');
 
   try {
-    const fd = new FormData();
-    fd.append('file', state.file);
-    const upRes = await fetch(`${API}/api/upload`, { method: 'POST', body: fd });
-    if (!upRes.ok) {
-      const err = await upRes.json().catch(() => ({ detail: '上傳失敗' }));
-      throw new Error(err.detail || '上傳失敗');
+    const params = getParams();
+    let job_id;
+    if (state.uploadMode === 'gcs') {
+      const prepareRes = await fetch(`${API}/api/upload/prepare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: state.file.name,
+          content_type: state.file.type || 'application/octet-stream',
+          size: state.file.size,
+        }),
+      });
+      if (!prepareRes.ok) throw new Error('無法準備安全上傳');
+      const prepared = await prepareRes.json();
+
+      const putRes = await fetch(prepared.upload_url, {
+        method: 'PUT',
+        headers: { 'Content-Type': prepared.content_type },
+        body: state.file,
+      });
+      if (!putRes.ok) throw new Error('檔案直傳暫存區失敗');
+
+      const completeRes = await fetch(`${API}/api/upload/${encodeURIComponent(prepared.upload_id)}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ options: params, filename: state.file.name, size: state.file.size }),
+      });
+      if (!completeRes.ok) throw new Error('Core 未能確認上傳檔案');
+      ({ job_id } = await completeRes.json());
+    } else {
+      const fd = new FormData();
+      fd.append('file', state.file);
+      const upRes = await fetch(`${API}/api/upload`, { method: 'POST', body: fd });
+      if (!upRes.ok) {
+        const err = await upRes.json().catch(() => ({ detail: '上傳失敗' }));
+        throw new Error(err.detail || '上傳失敗');
+      }
+      ({ job_id } = await upRes.json());
     }
-    const { job_id } = await upRes.json();
     state.jobId = job_id;
 
     setStatus('processing');
     setBusy(true, '正在分離圖層', '大型簡報可能需要幾分鐘，完成後會自動顯示頁面縮圖。');
-    const params = getParams();
-    const qs = new URLSearchParams(params).toString();
-    const procRes = await fetch(`${API}/api/process/${job_id}?${qs}`, { method: 'POST' });
-    if (!procRes.ok) {
-      const err = await procRes.json().catch(() => ({ detail: '啟動失敗' }));
-      throw new Error(err.detail || '啟動失敗');
+    if (state.uploadMode !== 'gcs') {
+      const qs = new URLSearchParams(params).toString();
+      const procRes = await fetch(`${API}/api/process/${job_id}?${qs}`, { method: 'POST' });
+      if (!procRes.ok) {
+        const err = await procRes.json().catch(() => ({ detail: '啟動失敗' }));
+        throw new Error(err.detail || '啟動失敗');
+      }
     }
 
     pollStatus(job_id);
@@ -416,6 +450,23 @@ function resetResults() {
   updateDraftControls();
 }
 
+function getPageAssetUrl(pageIndex, field, assetIndex = 0) {
+  const page = state.pages[pageIndex] || {};
+  const value = field === 'layer_files' ? page.layer_files?.[assetIndex] : page[field];
+  if (typeof value === 'string' && /^https?:\/\//i.test(value)) return value;
+
+  if (field === 'source_image') {
+    return `${API}/api/jobs/${state.jobId}/pages/${pageIndex}/source`;
+  }
+  if (field === 'background') {
+    return `${API}/api/jobs/${state.jobId}/pages/${pageIndex}/background`;
+  }
+  if (field === 'layer_files') {
+    return `${API}/api/jobs/${state.jobId}/pages/${pageIndex}/layers/${assetIndex}`;
+  }
+  return '';
+}
+
 // ── Pages grid ────────────────────────────────────────────────────────────────
 function renderPages() {
   $pagesEmpty.classList.add('hidden');
@@ -429,7 +480,7 @@ function renderPages() {
     card.dataset.index = i;
     card.innerHTML = `
       <div class="thumb-wrap">
-        <img src="${API}/api/jobs/${state.jobId}/pages/${i}/source"
+        <img src="${getPageAssetUrl(i, 'source_image')}"
              alt="第 ${i+1} 頁縮圖" loading="lazy">
         <span class="layer-count-badge">${page.layer_count} 圖層</span>
       </div>
@@ -554,11 +605,11 @@ function loadCanvasView(view, pageIndex, layerIndex = 0) {
 
   let bgUrl = '';
   if (view === 'editor' || view === 'background') {
-    bgUrl = `${API}/api/jobs/${state.jobId}/pages/${pageIndex}/background`;
+    bgUrl = getPageAssetUrl(pageIndex, 'background');
   } else if (view === 'source') {
-    bgUrl = `${API}/api/jobs/${state.jobId}/pages/${pageIndex}/source`;
+    bgUrl = getPageAssetUrl(pageIndex, 'source_image');
   } else if (view === 'layer') {
-    bgUrl = `${API}/api/jobs/${state.jobId}/pages/${pageIndex}/layers/${layerIndex}`;
+    bgUrl = getPageAssetUrl(pageIndex, 'layer_files', layerIndex);
   }
 
   const tempImg = new Image();
@@ -633,7 +684,7 @@ function renderItemContent(itemEl, edit, pageIndex) {
     const img = document.createElement('img');
     img.className = 'canvas-item-img';
     const lIdx = (state.pages[pageIndex]?.layers || []).findIndex(l => l.id === edit.id);
-    img.src = `${API}/api/jobs/${state.jobId}/pages/${pageIndex}/layers/${lIdx >= 0 ? lIdx : 0}`;
+    img.src = getPageAssetUrl(pageIndex, 'layer_files', lIdx >= 0 ? lIdx : 0);
     img.alt = edit.text || '文字圖層';
     itemEl.appendChild(img);
   } else {
@@ -1224,7 +1275,7 @@ function renderSidebarList(pageIndex) {
     let thumbHtml = '';
     if (edit.mode === 'image_layer' && !isCustomNew) {
       const lIdx = (state.pages[pageIndex]?.layers || []).findIndex(l => l.id === edit.id);
-      thumbHtml = `<img src="${API}/api/jobs/${state.jobId}/pages/${pageIndex}/layers/${lIdx >= 0 ? lIdx : 0}" alt="${edit.text}" loading="lazy">`;
+      thumbHtml = `<img src="${getPageAssetUrl(pageIndex, 'layer_files', lIdx >= 0 ? lIdx : 0)}" alt="${edit.text}" loading="lazy">`;
     } else {
       thumbHtml = `<span style="font-size:.7rem; color:${edit.style?.color_hex || '#fff'}; font-weight:bold;">T</span>`;
     }
@@ -1439,5 +1490,25 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+async function loadCapabilities() {
+  try {
+    const response = await fetch(`${API}/api/health`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    state.uploadMode = data.upload_mode === 'gcs' ? 'gcs' : 'local';
+    state.capabilitiesReady = true;
+    document.body.dataset.uploadMode = state.uploadMode;
+    $headerStatusText.textContent = state.uploadMode === 'gcs' ? '安全直傳模式' : '本機工作台';
+    syncDisabledControls();
+  } catch (error) {
+    state.capabilitiesReady = false;
+    console.error('capability check failed', error);
+    $headerStatusText.textContent = '無法連線';
+    toast('無法確認上傳模式，請重新整理頁面', 'error');
+    syncDisabledControls();
+  }
+}
+
 document.body.setAttribute('aria-busy', 'false');
+loadCapabilities();
 syncDisabledControls();

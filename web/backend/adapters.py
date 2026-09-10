@@ -6,7 +6,7 @@ between the local pipeline and MagicLayerCore's HTTP API by configuration.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 class LocalCoreBackend:
@@ -39,6 +39,24 @@ class RemoteCoreBackend:
             "debug_outputs": options.debug_outputs,
         }
         return self.client.submit_and_wait(input_path, output_dir, params)
+
+    def prepare_upload(self, filename: str, content_type: str, size: Optional[int]) -> dict:
+        return self.client.prepare_upload(filename, content_type, size)
+
+    def complete_upload(self, upload_id: str, options: dict, filename: Optional[str] = None, size: Optional[int] = None) -> dict:
+        return self.client.complete_upload(upload_id, options, filename, size)
+
+    def get_status(self, job_id: str) -> dict:
+        return self.client.get_job(job_id)
+
+    def health(self) -> dict:
+        return self.client.health()
+
+    def get_result(self, job_id: str) -> dict:
+        return self.client.result(job_id)
+
+    def delete_remote_job(self, job_id: str) -> dict:
+        return self.client.delete_job(job_id)
 
 
 def create_backend(mode: str, core_url: str, core_token: str = ""):

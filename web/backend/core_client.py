@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from urllib.parse import urljoin
+from typing import Optional
+from urllib.parse import quote, urljoin
 from urllib.request import Request, urlopen
 
 
@@ -19,6 +20,66 @@ class MagicLayerCoreClient:
         if self.token:
             request_headers["Authorization"] = f"Bearer {self.token}"
         return urlopen(Request(url, data=data, headers=request_headers, method=method), timeout=self.timeout)
+
+    def _json_request(self, path: str, payload=None, method="POST") -> dict:
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"} if data is not None else {}
+        with self._request(urljoin(self.base_url, path), data=data, headers=headers, method=method) as response:
+            return json.load(response)
+
+    def prepare_upload(self, filename: str, content_type: str, size: Optional[int]) -> dict:
+        return self._json_request(
+            "v1/uploads/prepare",
+            {"filename": filename, "content_type": content_type, "size": size},
+        )
+
+    def complete_upload(self, upload_id: str, options: dict, filename: Optional[str] = None, size: Optional[int] = None) -> dict:
+        return self._json_request(
+            f"v1/uploads/{quote(upload_id, safe='')}/complete",
+            {"options": options, "filename": filename, "size": size},
+        )
+
+    def get_job(self, job_id: str) -> dict:
+        return self._json_request(f"v1/jobs/{quote(job_id, safe='')}", method="GET")
+
+    def health(self) -> dict:
+        return self._json_request("health", method="GET")
+
+    def delete_job(self, job_id: str) -> dict:
+        return self._json_request(f"v1/jobs/{quote(job_id, safe='')}", method="DELETE")
+
+    def result(self, job_id: str) -> dict:
+        status = self.get_job(job_id)
+        pages = []
+        for page in status.get("pages", []):
+            page_id = page.get("page_id", "")
+            files = page.get("files", [])
+            page_data = dict(page)
+
+            def artifact_url(relative: Optional[str]) -> Optional[str]:
+                if not relative:
+                    return None
+                return urljoin(
+                    self.base_url,
+                    f"v1/jobs/{quote(job_id, safe='')}/artifacts/{quote(relative, safe='/')}",
+                )
+
+            page_data["source_image"] = artifact_url(page.get("source_image"))
+            page_data["background"] = artifact_url(page.get("background"))
+            page_data["layers_json"] = artifact_url(page.get("layers_json"))
+            page_data["objects_json"] = artifact_url(page.get("objects_json"))
+            page_data["layer_files"] = [artifact_url(path) for path in page.get("layer_files", [])]
+            page_data["output_dir"] = None
+            page_data["layer_count"] = len(page_data["layer_files"])
+            pages.append(page_data)
+
+        rebuilt_pptx = artifact_url_for(self.base_url, job_id, status.get("rebuilt_pptx"))
+        return {
+            "job_id": job_id,
+            "pages": pages,
+            "rebuilt_pptx": rebuilt_pptx,
+            "size_mb": None,
+        }
 
     def submit_and_wait(self, input_path: Path, output_dir: Path, params: dict) -> dict:
         boundary = "----MagicLayerCoreBoundary"
@@ -72,3 +133,12 @@ class MagicLayerCoreClient:
                 target.write_bytes(response.read())
         except Exception:
             pass
+
+
+def artifact_url_for(base_url: str, job_id: str, relative: Optional[str]) -> Optional[str]:
+    if not relative:
+        return None
+    return urljoin(
+        base_url,
+        f"v1/jobs/{quote(job_id, safe='')}/artifacts/{quote(relative, safe='/')}",
+    )
