@@ -163,9 +163,6 @@
       <button class="btn btn-primary btn-full" id="btn-process" disabled>
         開始分析圖層
       </button>
-      <button class="btn btn-outline btn-danger btn-full hidden" id="btn-cancel-process" type="button">
-        中止處理
-      </button>
     </div>
 
   </aside>
@@ -428,12 +425,15 @@
 </div>
 
 <div class="busy-overlay hidden" id="busy-overlay" aria-live="polite">
-  <div class="busy-card">
+  <div class="busy-card" role="status" aria-describedby="busy-message">
     <span class="spinner"></span>
-    <div>
+    <div class="busy-copy">
       <strong id="busy-title">處理中</strong>
       <p id="busy-message">正在準備作業，請稍候。</p>
     </div>
+    <button class="btn btn-outline btn-danger busy-cancel hidden" id="btn-cancel-process" type="button">
+      中止處理
+    </button>
   </div>
 </div>
 
