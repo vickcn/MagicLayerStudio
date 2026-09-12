@@ -617,6 +617,37 @@ function getPageAssetUrl(pageIndex, field, assetIndex = 0) {
   return '';
 }
 
+function resolveLayerAsset(pageIndex, edit) {
+  const page = state.pages[pageIndex] || {};
+  const layers = Array.isArray(page.layers) ? page.layers : [];
+  const files = Array.isArray(page.layer_files) ? page.layer_files : [];
+  const layerIndex = layers.findIndex((layer) => layer && layer.id === edit.id);
+  const layer = layerIndex >= 0 ? layers[layerIndex] : null;
+  const targetFile = typeof layer?.file === 'string' ? layer.file.replaceAll('\\', '/') : '';
+
+  // Core returns page-level paths while layers.json stores paths relative to
+  // the page directory. Match the actual file identity before using an index.
+  let fileIndex = targetFile
+    ? files.findIndex((file) => {
+      if (typeof file !== 'string') return false;
+      const normalized = file.replaceAll('\\', '/');
+      return normalized === targetFile || normalized.endsWith(`/${targetFile}`);
+    })
+    : -1;
+
+  // Older local results may not include layer.file. The index fallback is
+  // retained only for that legacy shape, never when a known file mismatches.
+  if (fileIndex < 0 && !targetFile && layerIndex >= 0 && layerIndex < files.length) {
+    fileIndex = layerIndex;
+  }
+
+  return {
+    index: fileIndex,
+    url: fileIndex >= 0 ? getPageAssetUrl(pageIndex, 'layer_files', fileIndex) : '',
+    layer,
+  };
+}
+
 // ── Pages grid ────────────────────────────────────────────────────────────────
 function renderPages() {
   $pagesEmpty.classList.add('hidden');
@@ -871,10 +902,42 @@ function renderItemContent(itemEl, edit, pageIndex) {
   if (edit.mode === 'image_layer' && !isCustomNew) {
     const img = document.createElement('img');
     img.className = 'canvas-item-img';
-    const lIdx = (state.pages[pageIndex]?.layers || []).findIndex(l => l.id === edit.id);
-    img.src = getPageAssetUrl(pageIndex, 'layer_files', lIdx >= 0 ? lIdx : 0);
+    const asset = resolveLayerAsset(pageIndex, edit);
     img.alt = edit.text || '文字圖層';
+    img.loading = 'eager';
+    img.decoding = 'async';
+    let retried = false;
+    img.addEventListener('load', () => {
+      itemEl.classList.remove('asset-loading', 'asset-error');
+      itemEl.classList.add('asset-ready');
+      itemEl.querySelector('.canvas-item-error')?.remove();
+    }, { once: true });
+    img.addEventListener('error', () => {
+      // Retry through the Studio BFF once. Do not append a cache buster to a
+      // signed GCS URL because that would invalidate its signature.
+      if (!retried && asset.url) {
+        retried = true;
+        const retryUrl = `${asset.url}${asset.url.includes('?') ? '&' : '?'}asset_retry=1`;
+        img.src = retryUrl;
+        return;
+      }
+      itemEl.classList.remove('asset-loading', 'asset-ready');
+      itemEl.classList.add('asset-error');
+      img.remove();
+
+      const fallback = document.createElement('span');
+      fallback.className = 'canvas-item-error';
+      fallback.textContent = edit.text || asset.layer?.text || '文字圖層載入失敗';
+      fallback.title = '圖層圖片載入失敗，暫以文字顯示；請重新載入結果。';
+      itemEl.insertBefore(fallback, itemEl.firstChild);
+    }, { once: true });
+    itemEl.classList.add('asset-loading');
     itemEl.insertBefore(img, itemEl.firstChild);
+    if (asset.url) {
+      img.src = asset.url;
+    } else {
+      img.dispatchEvent(new Event('error'));
+    }
   } else {
     // wordart 模式
     const wordart = document.createElement('div');
@@ -2254,8 +2317,10 @@ function renderSidebarList(pageIndex) {
 
     let thumbHtml = '';
     if (edit.mode === 'image_layer' && !isCustomNew) {
-      const lIdx = (state.pages[pageIndex]?.layers || []).findIndex(l => l.id === edit.id);
-      thumbHtml = `<img src="${getPageAssetUrl(pageIndex, 'layer_files', lIdx >= 0 ? lIdx : 0)}" alt="${edit.text}" loading="lazy">`;
+      const asset = resolveLayerAsset(pageIndex, edit);
+      thumbHtml = asset.url
+        ? `<img src="${asset.url}" alt="${edit.text}" loading="lazy">`
+        : `<span class="layer-thumb-error" title="圖層檔案不存在">!</span>`;
     } else {
       thumbHtml = `<span style="font-size:.7rem; color:${edit.style?.color_hex || '#fff'}; font-weight:bold;">T</span>`;
     }
@@ -2515,6 +2580,13 @@ async function autoRestoreLastJob() {
     }
   }
 }
+
+window.addEventListener('beforeunload', (e) => {
+  if (state.isDirty) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 document.body.setAttribute('aria-busy', 'false');
 loadCapabilities().then(() => {
