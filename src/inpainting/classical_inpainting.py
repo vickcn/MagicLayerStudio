@@ -189,12 +189,125 @@ def create_source_with_mask_preview(
     return preview
 
 
+def evaluate_local_background_complexity(
+    image: np.ndarray,
+    combined_mask: np.ndarray,
+    layer: dict,
+) -> dict:
+    """Assess whether the background around a text layer is smooth or complex/semantic."""
+    h_img, w_img = image.shape[:2]
+    x = max(0, int(layer.get("x", 0)))
+    y = max(0, int(layer.get("y", 0)))
+    w = max(1, int(layer.get("width", 1)))
+    h = max(1, int(layer.get("height", 1)))
+
+    pad = max(16, int(h * 0.25))
+    x1 = max(0, x - pad)
+    y1 = max(0, y - pad)
+    x2 = min(w_img, x + w + pad)
+    y2 = min(h_img, y + h + pad)
+
+    img_crop = image[y1:y2, x1:x2]
+    mask_crop = combined_mask[y1:y2, x1:x2]
+    bg_mask = mask_crop < 32
+
+    if np.count_nonzero(bg_mask) < 40:
+        return {
+            "id": layer.get("id"),
+            "text": layer.get("text", ""),
+            "height": h,
+            "is_complex": False,
+            "blurred_lap_var": 0.0,
+            "edge_density": 0.0,
+            "recommended_kernel": 7,
+            "inpaint_mode": "smooth_fallback",
+        }
+
+    gray_crop = cv2.cvtColor(img_crop, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray_crop, (5, 5), 0)
+
+    lap = cv2.Laplacian(blurred, cv2.CV_64F)
+    lap_bg = lap[bg_mask]
+    lap_var = float(np.var(lap_bg)) if len(lap_bg) > 0 else 0.0
+
+    canny = cv2.Canny(blurred, 30, 90)
+    canny_bg = canny[bg_mask]
+    edge_density = float(np.count_nonzero(canny_bg > 0) / np.count_nonzero(bg_mask)) if len(canny_bg) > 0 else 0.0
+
+    # Decision rule: High edge density (>5.5%) or high structure -> complex/portrait background
+    is_complex = (edge_density >= 0.055) or (lap_var >= 60.0 and edge_density >= 0.045)
+
+    if is_complex:
+        k_size = max(3, min(5, int(h * 0.02)))
+        if k_size % 2 == 0:
+            k_size -= 1
+        mode = "conservative_complex"
+    else:
+        style_hint = layer.get("style_hint", {})
+        has_stroke_or_shadow = bool(style_hint.get("stroke_color_rgb") or style_hint.get("likely_bold"))
+        ratio = 0.07 if has_stroke_or_shadow else 0.05
+        k_size = max(7, min(29, int(h * ratio)))
+        if k_size % 2 == 0:
+            k_size += 1
+        mode = "adaptive_smooth"
+
+    return {
+        "id": layer.get("id"),
+        "text": layer.get("text", ""),
+        "height": h,
+        "is_complex": is_complex,
+        "blurred_lap_var": round(lap_var, 2),
+        "edge_density": round(edge_density, 4),
+        "recommended_kernel": k_size,
+        "inpaint_mode": mode,
+    }
+
+
+def create_adaptive_inpaint_mask(
+    image: np.ndarray,
+    combined_text_mask: np.ndarray,
+    layers: Sequence[dict],
+    fallback_kernel_size: int = 3,
+) -> tuple[np.ndarray, np.ndarray, list[dict]]:
+    """Build an inpaint mask adaptively based on local background complexity and font scale."""
+    h_img, w_img = image.shape[:2]
+    if not layers:
+        mask, effective_k = create_conservative_inpaint_mask(combined_text_mask, fallback_kernel_size)
+        return mask, np.zeros_like(mask), []
+
+    inpaint_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+    smooth_regions_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+    layer_reports = []
+
+    for layer in layers:
+        info = evaluate_local_background_complexity(image, combined_text_mask, layer)
+        layer_reports.append(info)
+
+        x = max(0, int(layer.get("x", 0)))
+        y = max(0, int(layer.get("y", 0)))
+        w = max(1, int(layer.get("width", 1)))
+        h = max(1, int(layer.get("height", 1)))
+
+        layer_mask = combined_text_mask[y:y+h, x:x+w]
+        k_size = info["recommended_kernel"]
+        kernel = np.ones((k_size, k_size), np.uint8)
+
+        dilated = cv2.dilate((layer_mask >= 32).astype(np.uint8) * 255, kernel, iterations=1)
+        inpaint_mask[y:y+h, x:x+w] = np.maximum(inpaint_mask[y:y+h, x:x+w], dilated)
+
+        if not info["is_complex"]:
+            smooth_regions_mask[y:y+h, x:x+w] = np.maximum(smooth_regions_mask[y:y+h, x:x+w], dilated)
+
+    return inpaint_mask, smooth_regions_mask, layer_reports
+
+
 def run_classical_inpainting_baseline(
     image_path: Path,
     output_dir: Path,
     layers: Sequence[dict],
     dilate_kernel_size: int = 3,
     inpaint_radius: int = 1,
+    adaptive: bool = True,
 ) -> dict:
     image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if image is None:
@@ -206,24 +319,47 @@ def run_classical_inpainting_baseline(
         layers,
     )
     
-    inpaint_mask, effective_dilate_kernel_size = create_conservative_inpaint_mask(
-        combined_text_mask,
-        kernel_size=dilate_kernel_size,
-    )
+    if adaptive:
+        inpaint_mask, smooth_mask, layer_reports = create_adaptive_inpaint_mask(
+            image,
+            combined_text_mask,
+            layers,
+            fallback_kernel_size=dilate_kernel_size,
+        )
+        effective_radius = max(inpaint_radius, 3) if np.any(smooth_mask > 0) else inpaint_radius
+        effective_mode = "adaptive_texture_aware"
+    else:
+        inpaint_mask, effective_dilate_kernel_size = create_conservative_inpaint_mask(
+            combined_text_mask,
+            kernel_size=dilate_kernel_size,
+        )
+        smooth_mask = np.zeros_like(inpaint_mask)
+        layer_reports = []
+        effective_radius = inpaint_radius
+        effective_mode = "fixed_conservative"
 
     telea = cv2.inpaint(
         image,
         inpaint_mask,
-        inpaint_radius,
+        effective_radius,
         cv2.INPAINT_TELEA,
     )
 
     ns = cv2.inpaint(
         image,
         inpaint_mask,
-        inpaint_radius,
+        effective_radius,
         cv2.INPAINT_NS,
     )
+
+    # Post-smoothing feathering on smooth regions only to eliminate streak artifacts
+    if adaptive and np.any(smooth_mask > 0):
+        blurred_telea = cv2.bilateralFilter(telea, d=9, sigmaColor=30, sigmaSpace=30)
+        feather = cv2.GaussianBlur(smooth_mask.astype(np.float32) / 255.0, (7, 7), 0)[:, :, None]
+        telea = (telea.astype(np.float32) * (1.0 - feather) + blurred_telea.astype(np.float32) * feather).astype(np.uint8)
+
+        blurred_ns = cv2.bilateralFilter(ns, d=9, sigmaColor=30, sigmaSpace=30)
+        ns = (ns.astype(np.float32) * (1.0 - feather) + blurred_ns.astype(np.float32) * feather).astype(np.uint8)
 
     preview = create_source_with_mask_preview(image, inpaint_mask)
 
@@ -276,14 +412,13 @@ def run_classical_inpainting_baseline(
             "source_mask_ratio": float(np.count_nonzero(source_mask_binary) / source_mask_binary.size),
             "inpaint_mask_pixels": int(np.count_nonzero(mask_binary)),
             "inpaint_mask_ratio": float(np.count_nonzero(mask_binary) / mask_binary.size),
-            "mode": "conservative_alpha",
+            "mode": "adaptive_texture_aware",
             "requested_dilate_kernel_size": dilate_kernel_size,
-            "dilate_kernel_size": effective_dilate_kernel_size,
-            "dilate_iterations": 1,
+            "inpaint_radius": effective_radius,
+            "layer_evaluations": layer_reports,
         },
         "inpainting": {
-            # "radius": radius,
-            "radius": inpaint_radius,
+            "radius": effective_radius,
             "methods": [
                 "cv2.INPAINT_TELEA",
                 "cv2.INPAINT_NS",

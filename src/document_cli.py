@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable debug preview outputs",
     )
+    parser.add_argument(
+        "--no-adaptive",
+        action="store_true",
+        help="Disable adaptive texture-aware background inpainting",
+    )
     return parser
 
 
@@ -65,6 +70,7 @@ def main() -> None:
             pdf_dpi=args.pdf_dpi,
             rebuild_pptx=not args.no_rebuild_pptx,
             rebuilt_pptx_path=args.pptx_output,
+            adaptive_inpaint=not args.no_adaptive,
         ),
     )
     print(f"Done: {len(result.pages)} pages")

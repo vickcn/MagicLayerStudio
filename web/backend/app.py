@@ -436,6 +436,7 @@ def start_processing(
     inpaint_radius: int = 1,
     inpaint_backend: str = "telea",
     rebuild_pptx: bool = True,
+    adaptive_inpaint: bool = True,
 ):
     """Kick off background processing for a previously uploaded file."""
     job = _get_job(job_id)
@@ -459,12 +460,14 @@ def start_processing(
         inpaint_backend=inpaint_backend,
         rebuild_pptx=rebuild_pptx,
         debug_outputs=True,
+        adaptive_inpaint=adaptive_inpaint,
     )
 
     _set_job(job_id, status="pending", progress="排程中", params={
         "pdf_dpi": pdf_dpi, "padding": padding, "min_score": min_score,
         "dilate_kernel": dilate_kernel, "inpaint_radius": inpaint_radius,
         "inpaint_backend": inpaint_backend,
+        "adaptive_inpaint": adaptive_inpaint,
     })
 
     background_tasks.add_task(_run_pipeline, job_id, input_path, output_dir, options)

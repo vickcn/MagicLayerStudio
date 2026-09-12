@@ -37,6 +37,7 @@ class RemoteCoreBackend:
             "inpaint_backend": options.inpaint_backend,
             "rebuild_pptx": options.rebuild_pptx,
             "debug_outputs": options.debug_outputs,
+            "adaptive_inpaint": getattr(options, "adaptive_inpaint", True),
         }
         return self.client.submit_and_wait(input_path, output_dir, params)
 

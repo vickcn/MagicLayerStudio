@@ -27,6 +27,7 @@ def inpaint_background(
     inpaint_radius: int = 1,
     harmonize: bool = True,
     harmonizer: BackgroundHarmonizer | None = None,
+    adaptive: bool = True,
 ) -> Path | None:
 
     if backend == "none":
@@ -39,6 +40,7 @@ def inpaint_background(
             layers,
             dilate_kernel_size=dilate_kernel_size,
             inpaint_radius=inpaint_radius,
+            adaptive=adaptive,
         )
 
         bg_path = output_dir / f"background_{backend}.png"

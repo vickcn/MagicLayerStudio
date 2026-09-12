@@ -119,19 +119,30 @@
         </div>
 
         <div class="param-row">
+          <label class="param-label" for="p-inpaint-strategy">
+            修復策略
+            <small>--adaptive</small>
+          </label>
+          <select id="p-inpaint-strategy">
+            <option value="adaptive" selected>智慧自適應（推薦）</option>
+            <option value="manual">手動固定參數</option>
+          </select>
+        </div>
+
+        <div class="param-row" id="row-dilate-kernel">
           <label class="param-label" for="p-dilate-kernel">
             背景擦除核大小
             <small>--dilate-kernel</small>
           </label>
-          <input type="number" id="p-dilate-kernel" value="3" min="1" max="7" step="2">
+          <input type="number" id="p-dilate-kernel" value="3" min="1" max="31" step="2" disabled title="智慧自適應模式下由系統自動按字高與紋理動態調整">
         </div>
 
-        <div class="param-row">
+        <div class="param-row" id="row-inpaint-radius">
           <label class="param-label" for="p-inpaint-radius">
             修復半徑
             <small>--inpaint-radius</small>
           </label>
-          <input type="number" id="p-inpaint-radius" value="1" min="1" max="7">
+          <input type="number" id="p-inpaint-radius" value="1" min="1" max="7" disabled title="智慧自適應模式下由系統自動按字高與紋理動態調整">
         </div>
 
         <div class="param-row">

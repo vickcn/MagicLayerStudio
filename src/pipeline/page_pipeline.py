@@ -144,6 +144,7 @@ def process_page(
         dilate_kernel_size=options.dilate_kernel_size,
         inpaint_radius=options.inpaint_radius,
         harmonize=options.harmonize,
+        adaptive=options.adaptive_inpaint,
     )
 
     shutil.make_archive(str(output_dir), "zip", root_dir=output_dir)

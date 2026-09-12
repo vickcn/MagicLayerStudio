@@ -26,6 +26,7 @@ class PipelineOptions:
     rebuilt_pptx_path: Optional[Path] = None
     extract_style_hints: bool = True   # 推算文字圖層樣式提示
     source_pptx_path: Optional[Path] = None  # 如果來源是 PPTX，用於讀取原始字型
+    adaptive_inpaint: bool = True   # 智慧自適應背景修復
 
 
 @dataclass(frozen=True)

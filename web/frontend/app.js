@@ -157,6 +157,7 @@ const $btnDeleteObj     = $('btn-delete-obj');
 
 // ── Params ────────────────────────────────────────────────────────────────────
 function getParams() {
+  const isAdaptive = $('p-inpaint-strategy') ? $('p-inpaint-strategy').value === 'adaptive' : true;
   return {
     pdf_dpi:       parseInt($('p-pdf-dpi').value) || 120,
     padding:       parseInt($('p-padding').value) || 8,
@@ -164,8 +165,20 @@ function getParams() {
     dilate_kernel: parseInt($('p-dilate-kernel').value) || 3,
     inpaint_radius:parseInt($('p-inpaint-radius').value) || 1,
     inpaint_backend: $('p-inpaint-backend').value,
+    adaptive_inpaint: isAdaptive,
     rebuild_pptx:  true,
   };
+}
+
+const $pInpaintStrategy = $('p-inpaint-strategy');
+if ($pInpaintStrategy) {
+  $pInpaintStrategy.addEventListener('change', () => {
+    const isAdaptive = $pInpaintStrategy.value === 'adaptive';
+    const $dk = $('p-dilate-kernel');
+    const $ir = $('p-inpaint-radius');
+    if ($dk) $dk.disabled = isAdaptive;
+    if ($ir) $ir.disabled = isAdaptive;
+  });
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
