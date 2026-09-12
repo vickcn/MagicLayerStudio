@@ -19,12 +19,28 @@ def get_db_url() -> str:
         or os.environ.get("DATABASE_URL")
     )
     if not url:
-        # Try fetching from GCP Secret Manager
+        # Check local .env file
+        env_file = PROJECT_ROOT / ".env"
+        if env_file.exists():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("DATABASE_URL=") or line.startswith("MAGICLAYER_STUDIO_DATABASE_URL="):
+                    url = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if url:
+                        break
+    if not url:
+        # Check local .neon connection string file if present
+        neon_file = PROJECT_ROOT / ".neon"
+        if neon_file.exists():
+            url = neon_file.read_text(encoding="utf-8").strip()
+
+    if not url:
+        # Fallback to GCP Secret Manager if project is configured
         import subprocess
-        for secret_name in ("MAGICLAYER_STUDIO_DATABASE_URL", "MAGICLAYER_DATABASE_URL", "MAGICLAYER_CORE_DATABASE_URL"):
+        for secret_name in ("MAGICLAYER_STUDIO_DATABASE_URL", "MAGICLAYER_DATABASE_URL"):
             try:
                 res = subprocess.run(
-                    ["gcloud", "secrets", "versions", "access", "latest", f"--secret={secret_name}", "--project=audio-core-6826"],
+                    ["gcloud", "secrets", "versions", "access", "latest", f"--secret={secret_name}", "--project=magiclayer-studio-6826"],
                     capture_output=True, text=True, check=True
                 )
                 url = res.stdout.strip()

@@ -27,6 +27,7 @@ dataP**
 **.claude**
 **commands.txt
 dataAbstract
+.secret
 
 *analysis_result*.json
 *timer*.json

@@ -47,6 +47,11 @@ const $fileName        = $('file-name');
 const $btnRemove       = $('btn-remove-file');
 const $btnProcess      = $('btn-process');
 const $btnCancelProcess = $('btn-cancel-process');
+const $btnGoogleLogin  = $('btn-google-login');
+const $userProfile     = $('user-profile');
+const $userAvatar      = $('user-avatar');
+const $userName        = $('user-name');
+const $btnLogout       = $('btn-logout');
 const $progressWrap    = $('progress-wrap');
 const $progressBar     = $('progress-bar');
 const $statusText      = $('status-text');
@@ -2602,6 +2607,43 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+async function checkAuthSession() {
+  try {
+    const res = await fetch(`${API}/api/auth/session`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.authenticated) {
+      if ($btnGoogleLogin) $btnGoogleLogin.classList.add('hidden');
+      if ($userProfile) {
+        $userProfile.classList.remove('hidden');
+        if ($userAvatar && data.picture) $userAvatar.src = data.picture;
+        if ($userName) $userName.textContent = data.name || data.email || '已登入';
+      }
+    } else if (data.configured) {
+      if ($btnGoogleLogin) $btnGoogleLogin.classList.remove('hidden');
+      if ($userProfile) $userProfile.classList.add('hidden');
+    } else {
+      if ($btnGoogleLogin) $btnGoogleLogin.classList.add('hidden');
+      if ($userProfile) $userProfile.classList.add('hidden');
+    }
+  } catch (e) {
+    console.warn('Check auth session failed:', e);
+  }
+}
+
+if ($btnLogout) {
+  $btnLogout.addEventListener('click', async () => {
+    try {
+      await fetch(`${API}/auth/google/logout`, { method: 'POST' });
+      toast('已成功登出', '');
+      if ($userProfile) $userProfile.classList.add('hidden');
+      if ($btnGoogleLogin) $btnGoogleLogin.classList.remove('hidden');
+    } catch (e) {
+      console.warn('Logout failed:', e);
+    }
+  });
+}
+
 async function loadCapabilities() {
   try {
     const response = await fetch(`${API}/api/health`);
@@ -2612,6 +2654,7 @@ async function loadCapabilities() {
     document.body.dataset.uploadMode = state.uploadMode;
     $headerStatusText.textContent = state.uploadMode === 'gcs' ? '安全直傳模式' : '本機工作台';
     syncDisabledControls();
+    checkAuthSession();
   } catch (error) {
     state.capabilitiesReady = false;
     console.error('capability check failed', error);
