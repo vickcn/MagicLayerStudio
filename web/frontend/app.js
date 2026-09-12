@@ -18,10 +18,12 @@ const state = {
   selectedPageIndex: 0,
   selectedView: 'editor',  // editor | source | background | layer
   selectedLayerIndex: 0,
+  selectedObjIds: [],
   selectedObjId: null,
+  activeInteraction: null,
   jobSize: null,
   
-  // 自訂編輯資料：[pageIndex][objId] = { id, mode, text, x, y, width, height, deleted, style: {...} }
+  // 自訂編輯資料：[pageIndex][objId] = { id, mode, text, x, y, width, height, rotation, lock_aspect, deleted, style: {...} }
   customEdits: {},
   // 當前畫布的天然解析度
   canvasNaturalSize: { width: 1920, height: 1080 },
@@ -63,6 +65,7 @@ const $btnDiscardDraft = $('btn-discard-draft');
 const $canvasContainer = $('canvas-container');
 const $canvasStage     = $('canvas-stage');
 const $mainImg         = $('main-img');
+const $canvasGuides    = $('canvas-guides');
 const $canvasOverlay   = $('canvas-overlay');
 const $imgLoading      = $('img-loading');
 
@@ -90,6 +93,10 @@ const $confirmSubmit   = $('confirm-submit');
 // Inspector DOM
 const $inspectorPanel   = $('inspector-panel');
 const $inspectorEmpty   = $('inspector-empty');
+const $inspectorMulti   = $('inspector-multi');
+const $multiCountLabel  = $('multi-count-label');
+const $btnMultiCopy     = $('btn-multi-copy');
+const $btnMultiDelete   = $('btn-multi-delete');
 const $inspectorBody    = $('inspector-body');
 const $inspectorObjId   = $('inspector-obj-id');
 const $modeImageBtn     = $('mode-image-btn');
@@ -102,12 +109,49 @@ const $propItalic       = $('prop-italic');
 const $propAlignLeft    = $('prop-align-left');
 const $propAlignCenter  = $('prop-align-center');
 const $propAlignRight   = $('prop-align-right');
+const $propValignTop    = $('prop-valign-top');
+const $propValignMiddle = $('prop-valign-middle');
+const $propValignBottom = $('prop-valign-bottom');
+
+// WordArt Fill & Effects DOM
+const $fillSolidBtn     = $('fill-solid-btn');
+const $fillGradientBtn  = $('fill-gradient-btn');
+const $fillSolidWrap    = $('fill-solid-wrap');
+const $fillGradientWrap = $('fill-gradient-wrap');
 const $propColor        = $('prop-color');
 const $propColorHex     = $('prop-color-hex');
+const $propGradC1       = $('prop-grad-c1');
+const $propGradC1Hex    = $('prop-grad-c1-hex');
+const $propGradC2       = $('prop-grad-c2');
+const $propGradC2Hex    = $('prop-grad-c2-hex');
+const $propGradAngle    = $('prop-grad-angle');
+const $gradAngleLabel   = $('grad-angle-label');
+
+const $propOutlineEnable = $('prop-outline-enable');
+const $outlineBody      = $('outline-body');
+const $propOutlineColor = $('prop-outline-color');
+const $propOutlineColorHex = $('prop-outline-color-hex');
+const $propOutlineWidth = $('prop-outline-width');
+
+const $propShadowEnable = $('prop-shadow-enable');
+const $shadowBody       = $('shadow-body');
+const $propShadowColor  = $('prop-shadow-color');
+const $propShadowColorHex = $('prop-shadow-color-hex');
+const $propShadowOpacity = $('prop-shadow-opacity');
+const $propShadowX      = $('prop-shadow-x');
+const $propShadowY      = $('prop-shadow-y');
+const $propShadowBlur   = $('prop-shadow-blur');
+
 const $propPosX         = $('prop-pos-x');
 const $propPosY         = $('prop-pos-y');
 const $propPosW         = $('prop-pos-w');
 const $propPosH         = $('prop-pos-h');
+const $propLockAspect   = $('prop-lock-aspect');
+const $propRotation     = $('prop-rotation');
+const $propRotationSlider = $('prop-rotation-slider');
+const $propRotationReset = $('prop-rotation-reset');
+const $propOpacity      = $('prop-opacity');
+const $opacityLabel     = $('opacity-label');
 const $btnCopyObj       = $('btn-copy-obj');
 const $btnDeleteObj     = $('btn-delete-obj');
 
@@ -745,25 +789,55 @@ function loadCanvasView(view, pageIndex, layerIndex = 0) {
   tempImg.src = bgUrl;
 }
 
-// ── Render Interactive Overlay ────────────────────────────────────────────────
+// ── Render Interactive Overlay & PPT Simulator Controls ──────────────────────
 function renderInteractiveOverlay(pageIndex) {
   $canvasOverlay.innerHTML = '';
-  $canvasOverlay.onclick = (e) => {
-    if (e.target === $canvasOverlay) deselectObject();
-  };
-  const activeItems = getActivePageEdits(pageIndex);
+  clearSnapGuides();
 
-  const natW = state.canvasNaturalSize.width;
-  const natH = state.canvasNaturalSize.height;
+  $canvasOverlay.onmousedown = (e) => {
+    if (e.target === $canvasOverlay) {
+      deselectObject();
+    }
+  };
+
+  const activeItems = getActivePageEdits(pageIndex);
+  const natW = state.canvasNaturalSize.width || 1920;
+  const natH = state.canvasNaturalSize.height || 1080;
 
   activeItems.forEach((edit) => {
+    const isSelected = state.selectedObjId === edit.id;
+    const isMultiSelected = state.selectedObjIds.includes(edit.id) && !isSelected;
+
     const item = document.createElement('div');
-    item.className = 'canvas-item' + (state.selectedObjId === edit.id ? ' selected' : '');
+    item.className = 'canvas-item' +
+      (isSelected ? ' selected' : '') +
+      (isMultiSelected ? ' multi-selected' : '');
     item.id = `canvas-item-${edit.id}`;
     item.dataset.id = edit.id;
 
     updateCanvasItemStyle(item, edit, natW, natH);
     renderItemContent(item, edit, pageIndex);
+
+    // 建立 8 個縮放控制點與 1 個旋轉控制點
+    const handles = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+    handles.forEach((dir) => {
+      const h = document.createElement('div');
+      h.className = `resize-handle handle-${dir}`;
+      h.dataset.handle = dir;
+      attachResizeHandle(h, dir, edit.id, pageIndex);
+      item.appendChild(h);
+    });
+
+    const rotStem = document.createElement('div');
+    rotStem.className = 'rotate-handle-stem';
+    item.appendChild(rotStem);
+
+    const rotHandle = document.createElement('div');
+    rotHandle.className = 'rotate-handle';
+    rotHandle.title = '旋轉物件（拖曳時按 Shift 可依 15° 增量吸附）';
+    attachRotateHandle(rotHandle, edit.id, pageIndex);
+    item.appendChild(rotHandle);
+
     attachDragAndSelect(item, edit.id, pageIndex);
 
     $canvasOverlay.appendChild(item);
@@ -775,15 +849,23 @@ function updateCanvasItemStyle(el, edit, natW, natH) {
   const topPct = (edit.y / natH) * 100;
   const widthPct = (edit.width / natW) * 100;
   const heightPct = (edit.height / natH) * 100;
+  const rot = edit.rotation || 0;
+  const opacity = edit.opacity !== undefined ? edit.opacity : 1;
 
   el.style.left = `${leftPct}%`;
   el.style.top = `${topPct}%`;
   el.style.width = `${widthPct}%`;
   el.style.height = `${heightPct}%`;
+  el.style.transform = rot ? `rotate(${rot}deg)` : 'none';
+  el.style.opacity = `${opacity}`;
 }
 
 function renderItemContent(itemEl, edit, pageIndex) {
+  // 只清除內容，保留 handles
+  const existingHandles = itemEl.querySelectorAll('.resize-handle, .rotate-handle, .rotate-handle-stem');
   itemEl.innerHTML = '';
+  existingHandles.forEach(h => itemEl.appendChild(h));
+
   const isCustomNew = edit.id.startsWith('custom_text_');
 
   if (edit.mode === 'image_layer' && !isCustomNew) {
@@ -792,51 +874,249 @@ function renderItemContent(itemEl, edit, pageIndex) {
     const lIdx = (state.pages[pageIndex]?.layers || []).findIndex(l => l.id === edit.id);
     img.src = getPageAssetUrl(pageIndex, 'layer_files', lIdx >= 0 ? lIdx : 0);
     img.alt = edit.text || '文字圖層';
-    itemEl.appendChild(img);
+    itemEl.insertBefore(img, itemEl.firstChild);
   } else {
     // wordart 模式
     const wordart = document.createElement('div');
-    wordart.className = 'wordart-preview';
+    const s = edit.style || {};
+    const vAlign = s.vertical_align || 'middle';
+    wordart.className = `wordart-preview valign-${vAlign}`;
     wordart.textContent = edit.text;
 
-    const s = edit.style || {};
-    wordart.style.fontFamily = `"${s.font_name}", "Noto Sans TC", sans-serif`;
+    wordart.style.fontFamily = `"${s.font_name || 'Noto Sans TC'}", "Noto Sans TC", sans-serif`;
     wordart.style.fontWeight = s.bold ? '700' : '400';
     wordart.style.fontStyle = s.italic ? 'italic' : 'normal';
-    wordart.style.color = s.color_hex || '#FFFFFF';
     wordart.style.textAlign = s.align || 'center';
-    wordart.style.justifyContent = s.align === 'left' ? 'flex-start' : (s.align === 'right' ? 'flex-end' : 'center');
-    
+
     const stageH = $canvasStage.clientHeight || 480;
-    const scaleRatio = stageH / state.canvasNaturalSize.height;
-    const scaledPx = Math.max(10, Math.round((s.font_size_pt * 1.333) * scaleRatio));
+    const scaleRatio = stageH / (state.canvasNaturalSize.height || 1080);
+    const scaledPx = Math.max(10, Math.round(((s.font_size_pt || 24) * 1.333) * scaleRatio));
     wordart.style.fontSize = `${scaledPx}px`;
 
-    itemEl.appendChild(wordart);
+    // 1. 填色處理 (單色 vs 漸層)
+    const fill = s.fill || { type: 'solid', color: s.color_hex || '#FFFFFF' };
+    if (fill.type === 'gradient' && Array.isArray(fill.colors) && fill.colors.length >= 2) {
+      const angle = fill.angle !== undefined ? fill.angle : 90;
+      wordart.style.backgroundImage = `linear-gradient(${angle}deg, ${fill.colors[0]}, ${fill.colors[1]})`;
+      wordart.style.webkitBackgroundClip = 'text';
+      wordart.style.webkitTextFillColor = 'transparent';
+      wordart.style.color = 'transparent';
+    } else {
+      wordart.style.backgroundImage = 'none';
+      wordart.style.webkitBackgroundClip = 'initial';
+      wordart.style.webkitTextFillColor = 'initial';
+      wordart.style.color = fill.color || s.color_hex || '#FFFFFF';
+    }
+
+    // 2. 文字外框 (Outline)
+    const outline = s.outline || {};
+    if (outline.enabled && outline.width > 0) {
+      const strokeScaled = Math.max(1, Math.round((outline.width || 2) * scaleRatio * 1.2));
+      wordart.style.webkitTextStroke = `${strokeScaled}px ${outline.color || '#7A2E00'}`;
+      wordart.style.paintOrder = 'stroke fill';
+    } else {
+      wordart.style.webkitTextStroke = '0px transparent';
+    }
+
+    // 3. 文字陰影 (Shadow)
+    const shadow = s.shadow || {};
+    if (shadow.enabled) {
+      const shColor = shadow.color || '#000000';
+      const shOpacity = shadow.opacity !== undefined ? shadow.opacity : 0.35;
+      const shRgb = hexToRgb(shColor) || [0, 0, 0];
+      const shRgba = `rgba(${shRgb[0]}, ${shRgb[1]}, ${shRgb[2]}, ${shOpacity})`;
+      const sx = Math.round((shadow.offset_x || 4) * scaleRatio);
+      const sy = Math.round((shadow.offset_y || 4) * scaleRatio);
+      const sblur = Math.round((shadow.blur || 8) * scaleRatio);
+      wordart.style.textShadow = `${sx}px ${sy}px ${sblur}px ${shRgba}`;
+    } else {
+      wordart.style.textShadow = 'none';
+    }
+
+    itemEl.insertBefore(wordart, itemEl.firstChild);
   }
 }
 
-// ── Drag & Select Handler ─────────────────────────────────────────────────────
-function attachDragAndSelect(el, objId, pageIndex) {
-  el.addEventListener('mousedown', (e) => {
-    e.stopPropagation();
-    selectObject(objId);
+// ── Smart Snap Guides ─────────────────────────────────────────────────────────
+function clearSnapGuides() {
+  if ($canvasGuides) $canvasGuides.innerHTML = '';
+}
 
-    const edit = getObjectEdit(pageIndex, objId);
-    if (!edit) return;
+function drawSnapGuides(guidesX, guidesY, natW, natH) {
+  if (!$canvasGuides) return;
+  $canvasGuides.innerHTML = '';
+
+  guidesX.forEach((gx) => {
+    const line = document.createElement('div');
+    line.className = 'snap-guide-x';
+    line.style.left = `${(gx / natW) * 100}%`;
+    $canvasGuides.appendChild(line);
+  });
+
+  guidesY.forEach((gy) => {
+    const line = document.createElement('div');
+    line.className = 'snap-guide-y';
+    line.style.top = `${(gy / natH) * 100}%`;
+    $canvasGuides.appendChild(line);
+  });
+}
+
+function computeSnap(activeEdits, currentEditId, targetBox, natW, natH, stageRect) {
+  const thresholdPx = 6;
+  const scaleX = natW / stageRect.width;
+  const scaleY = natH / stageRect.height;
+  const thresholdX = thresholdPx * scaleX;
+  const thresholdY = thresholdPx * scaleY;
+
+  let snappedX = targetBox.x;
+  let snappedY = targetBox.y;
+  const guidesX = [];
+  const guidesY = [];
+
+  const candidateX = [
+    { pos: 0, desc: 'left-boundary' },
+    { pos: Math.round(natW / 2), desc: 'center-x' },
+    { pos: natW, desc: 'right-boundary' }
+  ];
+
+  const candidateY = [
+    { pos: 0, desc: 'top-boundary' },
+    { pos: Math.round(natH / 2), desc: 'center-y' },
+    { pos: natH, desc: 'bottom-boundary' }
+  ];
+
+  activeEdits.forEach((item) => {
+    if (item.id === currentEditId || item.deleted) return;
+    candidateX.push({ pos: item.x, desc: 'other-left' });
+    candidateX.push({ pos: Math.round(item.x + item.width / 2), desc: 'other-center-x' });
+    candidateX.push({ pos: item.x + item.width, desc: 'other-right' });
+
+    candidateY.push({ pos: item.y, desc: 'other-top' });
+    candidateY.push({ pos: Math.round(item.y + item.height / 2), desc: 'other-center-y' });
+    candidateY.push({ pos: item.y + item.height, desc: 'other-bottom' });
+  });
+
+  const curLeft = targetBox.x;
+  const curCenterX = Math.round(targetBox.x + targetBox.width / 2);
+  const curRight = targetBox.x + targetBox.width;
+
+  let minDiffX = thresholdX;
+  candidateX.forEach((c) => {
+    // 檢查靠左
+    if (Math.abs(curLeft - c.pos) < minDiffX) {
+      minDiffX = Math.abs(curLeft - c.pos);
+      snappedX = c.pos;
+      guidesX.length = 0;
+      guidesX.push(c.pos);
+    }
+    // 檢查置中
+    if (Math.abs(curCenterX - c.pos) < minDiffX) {
+      minDiffX = Math.abs(curCenterX - c.pos);
+      snappedX = c.pos - Math.round(targetBox.width / 2);
+      guidesX.length = 0;
+      guidesX.push(c.pos);
+    }
+    // 檢查靠右
+    if (Math.abs(curRight - c.pos) < minDiffX) {
+      minDiffX = Math.abs(curRight - c.pos);
+      snappedX = c.pos - targetBox.width;
+      guidesX.length = 0;
+      guidesX.push(c.pos);
+    }
+  });
+
+  const curTop = targetBox.y;
+  const curCenterY = Math.round(targetBox.y + targetBox.height / 2);
+  const curBottom = targetBox.y + targetBox.height;
+
+  let minDiffY = thresholdY;
+  candidateY.forEach((c) => {
+    // 檢查靠頂
+    if (Math.abs(curTop - c.pos) < minDiffY) {
+      minDiffY = Math.abs(curTop - c.pos);
+      snappedY = c.pos;
+      guidesY.length = 0;
+      guidesY.push(c.pos);
+    }
+    // 檢查垂直置中
+    if (Math.abs(curCenterY - c.pos) < minDiffY) {
+      minDiffY = Math.abs(curCenterY - c.pos);
+      snappedY = c.pos - Math.round(targetBox.height / 2);
+      guidesY.length = 0;
+      guidesY.push(c.pos);
+    }
+    // 檢查靠底
+    if (Math.abs(curBottom - c.pos) < minDiffY) {
+      minDiffY = Math.abs(curBottom - c.pos);
+      snappedY = c.pos - targetBox.height;
+      guidesY.length = 0;
+      guidesY.push(c.pos);
+    }
+  });
+
+  return { snappedX, snappedY, guidesX, guidesY };
+}
+
+// ── Drag & Select Handler (支援多選群組移動、對齊吸附與行動觸控) ─────────────
+function attachDragAndSelect(el, objId, pageIndex) {
+  el.addEventListener('pointerdown', (e) => {
+    if (e.target.classList.contains('resize-handle') || e.target.classList.contains('rotate-handle')) {
+      return;
+    }
+    e.stopPropagation();
+
+    const isMultiKey = e.ctrlKey || e.metaKey || e.shiftKey;
+    if (isMultiKey) {
+      toggleObjectSelection(objId);
+      return;
+    }
+
+    if (!state.selectedObjIds.includes(objId)) {
+      selectObject(objId);
+    }
 
     const stageRect = $canvasStage.getBoundingClientRect();
-    const natW = state.canvasNaturalSize.width;
-    const natH = state.canvasNaturalSize.height;
+    const natW = state.canvasNaturalSize.width || 1920;
+    const natH = state.canvasNaturalSize.height || 1080;
+    const activeEdits = getActivePageEdits(pageIndex);
 
     const startMouseX = e.clientX;
     const startMouseY = e.clientY;
-    const startObjX = edit.x;
-    const startObjY = edit.y;
+
+    const initialPositions = new Map();
+    state.selectedObjIds.forEach((id) => {
+      const ed = getObjectEdit(pageIndex, id);
+      if (ed) {
+        initialPositions.set(id, { x: ed.x, y: ed.y, width: ed.width, height: ed.height, rotation: ed.rotation || 0 });
+      }
+    });
+
+    const primaryInitial = initialPositions.get(objId);
+    if (!primaryInitial) return;
 
     let hasMoved = false;
 
-    function onMouseMove(moveEvent) {
+    state.activeInteraction = {
+      type: 'drag',
+      pageIndex,
+      initialPositions,
+      cancel: () => {
+        initialPositions.forEach((pos, id) => {
+          const ed = getObjectEdit(pageIndex, id);
+          if (ed) {
+            ed.x = pos.x;
+            ed.y = pos.y;
+            const dom = document.getElementById(`canvas-item-${id}`);
+            if (dom) updateCanvasItemStyle(dom, ed, natW, natH);
+          }
+        });
+        clearSnapGuides();
+        const curEd = getObjectEdit(pageIndex, state.selectedObjId);
+        if (curEd) updateInspectorPosition(curEd);
+      }
+    };
+
+    function onPointerMove(moveEvent) {
       const dxPx = moveEvent.clientX - startMouseX;
       const dyPx = moveEvent.clientY - startMouseY;
 
@@ -847,51 +1127,301 @@ function attachDragAndSelect(el, objId, pageIndex) {
 
       const scaleX = natW / stageRect.width;
       const scaleY = natH / stageRect.height;
+      const rawNewX = primaryInitial.x + dxPx * scaleX;
+      const rawNewY = primaryInitial.y + dyPx * scaleY;
 
-      const newX = Math.round(startObjX + dxPx * scaleX);
-      const newY = Math.round(startObjY + dyPx * scaleY);
+      const snapRes = computeSnap(
+        activeEdits,
+        objId,
+        { x: rawNewX, y: rawNewY, width: primaryInitial.width, height: primaryInitial.height },
+        natW,
+        natH,
+        stageRect
+      );
 
-      edit.x = Math.max(0, Math.min(natW - edit.width, newX));
-      edit.y = Math.max(0, Math.min(natH - edit.height, newY));
+      const effectiveDx = snapRes.snappedX - primaryInitial.x;
+      const effectiveDy = snapRes.snappedY - primaryInitial.y;
 
-      updateCanvasItemStyle(el, edit, natW, natH);
+      drawSnapGuides(snapRes.guidesX, snapRes.guidesY, natW, natH);
+
+      state.selectedObjIds.forEach((id) => {
+        const ed = getObjectEdit(pageIndex, id);
+        const init = initialPositions.get(id);
+        if (ed && init) {
+          const nx = Math.round(init.x + effectiveDx);
+          const ny = Math.round(init.y + effectiveDy);
+          ed.x = Math.max(0, Math.min(natW - ed.width, nx));
+          ed.y = Math.max(0, Math.min(natH - ed.height, ny));
+
+          const dom = document.getElementById(`canvas-item-${id}`);
+          if (dom) updateCanvasItemStyle(dom, ed, natW, natH);
+        }
+      });
+
+      const primaryEdit = getObjectEdit(pageIndex, state.selectedObjId);
+      if (primaryEdit) updateInspectorPosition(primaryEdit);
+      markDirty();
+    }
+
+    function onPointerUp() {
+      state.activeInteraction = null;
+      clearSnapGuides();
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+    }
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+  });
+}
+
+// ── 8 Resize Handles Handler (支援行動觸控 / Shift 比例 / Alt 中心縮放) ──────
+function attachResizeHandle(handleEl, dir, objId, pageIndex) {
+  handleEl.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    selectObject(objId);
+
+    const edit = getObjectEdit(pageIndex, objId);
+    if (!edit) return;
+
+    const stageRect = $canvasStage.getBoundingClientRect();
+    const natW = state.canvasNaturalSize.width || 1920;
+    const natH = state.canvasNaturalSize.height || 1080;
+
+    const startMouseX = e.clientX;
+    const startMouseY = e.clientY;
+    const startX = edit.x;
+    const startY = edit.y;
+    const startW = edit.width;
+    const startH = edit.height;
+    const initialAspect = startW / (startH || 1);
+
+    let hasMoved = false;
+
+    state.activeInteraction = {
+      type: 'resize',
+      pageIndex,
+      cancel: () => {
+        edit.x = startX;
+        edit.y = startY;
+        edit.width = startW;
+        edit.height = startH;
+        const dom = document.getElementById(`canvas-item-${objId}`);
+        if (dom) {
+          updateCanvasItemStyle(dom, edit, natW, natH);
+          renderItemContent(dom, edit, pageIndex);
+        }
+        clearSnapGuides();
+        updateInspectorPosition(edit);
+      }
+    };
+
+    function onPointerMove(moveEvent) {
+      const dxPx = moveEvent.clientX - startMouseX;
+      const dyPx = moveEvent.clientY - startMouseY;
+
+      if (!hasMoved && (Math.abs(dxPx) > 2 || Math.abs(dyPx) > 2)) {
+        hasMoved = true;
+        pushUndo();
+      }
+
+      const scaleX = natW / stageRect.width;
+      const scaleY = natH / stageRect.height;
+      const dx = dxPx * scaleX;
+      const dy = dyPx * scaleY;
+
+      let newX = startX;
+      let newY = startY;
+      let newW = startW;
+      let newH = startH;
+
+      const shouldLockAspect = moveEvent.shiftKey || edit.lock_aspect || edit.mode === 'image_layer';
+      const fromCenter = moveEvent.altKey;
+
+      if (dir.includes('e')) newW = startW + (fromCenter ? dx * 2 : dx);
+      if (dir.includes('w')) {
+        newW = startW - (fromCenter ? dx * 2 : dx);
+        if (!fromCenter) newX = startX + dx;
+      }
+      if (dir.includes('s')) newH = startH + (fromCenter ? dy * 2 : dy);
+      if (dir.includes('n')) {
+        newH = startH - (fromCenter ? dy * 2 : dy);
+        if (!fromCenter) newY = startY + dy;
+      }
+
+      // 鎖定長寬比
+      if (shouldLockAspect && (dir === 'nw' || dir === 'ne' || dir === 'se' || dir === 'sw')) {
+        const aspectW = newH * initialAspect;
+        const aspectH = newW / initialAspect;
+        if (Math.abs(dx) > Math.abs(dy)) {
+          newH = aspectH;
+          if (dir.includes('n') && !fromCenter) newY = startY + (startH - newH);
+        } else {
+          newW = aspectW;
+          if (dir.includes('w') && !fromCenter) newX = startX + (startW - newW);
+        }
+      }
+
+      if (fromCenter) {
+        newX = startX - (newW - startW) / 2;
+        newY = startY - (newH - startH) / 2;
+      }
+
+      // 限制最小尺寸與邊界
+      newW = Math.max(20, Math.round(newW));
+      newH = Math.max(16, Math.round(newH));
+      newX = Math.max(0, Math.min(natW - newW, Math.round(newX)));
+      newY = Math.max(0, Math.min(natH - newH, Math.round(newY)));
+
+      edit.x = newX;
+      edit.y = newY;
+      edit.width = newW;
+      edit.height = newH;
+
+      const dom = document.getElementById(`canvas-item-${objId}`);
+      if (dom) {
+        updateCanvasItemStyle(dom, edit, natW, natH);
+        renderItemContent(dom, edit, pageIndex);
+      }
       updateInspectorPosition(edit);
       markDirty();
     }
 
-    function onMouseUp() {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+    function onPointerUp() {
+      state.activeInteraction = null;
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
     }
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
   });
 }
 
+// ── Rotate Handle Handler (支援行動觸控 / Shift 15° 吸附) ────────────────────
+function attachRotateHandle(handleEl, objId, pageIndex) {
+  handleEl.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    selectObject(objId);
+
+    const edit = getObjectEdit(pageIndex, objId);
+    if (!edit) return;
+
+    const dom = document.getElementById(`canvas-item-${objId}`);
+    if (!dom) return;
+
+    const rect = dom.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const startRot = edit.rotation || 0;
+
+    let hasMoved = false;
+
+    state.activeInteraction = {
+      type: 'rotate',
+      pageIndex,
+      cancel: () => {
+        edit.rotation = startRot;
+        if (dom) updateCanvasItemStyle(dom, edit, state.canvasNaturalSize.width, state.canvasNaturalSize.height);
+        if ($propRotation) $propRotation.value = startRot;
+        if ($propRotationSlider) $propRotationSlider.value = startRot;
+      }
+    };
+
+    function onPointerMove(moveEvent) {
+      if (!hasMoved) {
+        hasMoved = true;
+        pushUndo();
+      }
+
+      const mouseX = moveEvent.clientX;
+      const mouseY = moveEvent.clientY;
+      const rad = Math.atan2(mouseY - centerY, mouseX - centerX);
+      let deg = Math.round((rad * 180) / Math.PI) + 90;
+
+      // 正規化至 -180 ~ 180
+      if (deg > 180) deg -= 360;
+      if (deg < -180) deg += 360;
+
+      // Shift: 15 度增量吸附
+      if (moveEvent.shiftKey) {
+        deg = Math.round(deg / 15) * 15;
+      }
+
+      edit.rotation = deg;
+      updateCanvasItemStyle(dom, edit, state.canvasNaturalSize.width, state.canvasNaturalSize.height);
+
+      if ($propRotation) $propRotation.value = deg;
+      if ($propRotationSlider) $propRotationSlider.value = deg;
+      markDirty();
+    }
+
+    function onPointerUp() {
+      state.activeInteraction = null;
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+    }
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+  });
+}
+
+// ── Selection State Management ────────────────────────────────────────────────
 function selectObject(objId) {
+  state.selectedObjIds = [objId];
   state.selectedObjId = objId;
-
-  document.querySelectorAll('.canvas-item').forEach((item) => {
-    item.classList.toggle('selected', item.dataset.id === objId);
-  });
-
-  document.querySelectorAll('.layer-card-item').forEach((card) => {
-    card.classList.toggle('active', card.dataset.id === objId);
-  });
-
+  syncSelectionClasses();
   openInspector(objId);
 }
 
+function toggleObjectSelection(objId) {
+  const idx = state.selectedObjIds.indexOf(objId);
+  if (idx >= 0) {
+    state.selectedObjIds.splice(idx, 1);
+    state.selectedObjId = state.selectedObjIds[state.selectedObjIds.length - 1] || null;
+  } else {
+    state.selectedObjIds.push(objId);
+    state.selectedObjId = objId;
+  }
+  syncSelectionClasses();
+
+  if (state.selectedObjIds.length === 0) {
+    closeInspector();
+  } else if (state.selectedObjIds.length === 1) {
+    openInspector(state.selectedObjId);
+  } else {
+    openMultiInspector();
+  }
+}
+
 function deselectObject() {
+  state.selectedObjIds = [];
   state.selectedObjId = null;
-  document.querySelectorAll('.canvas-item').forEach((item) => {
-    item.classList.remove('selected');
-  });
-  document.querySelectorAll('.layer-card-item').forEach((card) => {
-    card.classList.remove('active');
-  });
+  syncSelectionClasses();
+  clearSnapGuides();
   closeInspector();
+}
+
+function syncSelectionClasses() {
+  document.querySelectorAll('.canvas-item').forEach((item) => {
+    const id = item.dataset.id;
+    const isPrimary = state.selectedObjId === id;
+    const isMulti = state.selectedObjIds.includes(id) && !isPrimary;
+    item.classList.toggle('selected', isPrimary);
+    item.classList.toggle('multi-selected', isMulti);
+  });
+
+  document.querySelectorAll('.layer-card-item').forEach((card) => {
+    const id = card.dataset.id;
+    card.classList.toggle('active', state.selectedObjIds.includes(id));
+  });
 }
 
 // ── Inspector Panel Logic ─────────────────────────────────────────────────────
@@ -900,6 +1430,7 @@ function openInspector(objId) {
   if (!edit) { closeInspector(); return; }
 
   $inspectorEmpty.classList.add('hidden');
+  $inspectorMulti.classList.add('hidden');
   $inspectorBody.classList.remove('hidden');
   $inspectorObjId.textContent = objId.startsWith('custom_text_') ? '自訂文字方塊' : objId;
 
@@ -907,7 +1438,6 @@ function openInspector(objId) {
   $modeImageBtn.classList.toggle('active', edit.mode === 'image_layer');
   $modeWordartBtn.classList.toggle('active', edit.mode === 'wordart');
 
-  // 若為使用者自訂新增的方塊，停用透明圖層模式（因為沒有原始圖片）
   const isCustomNew = edit.id.startsWith('custom_text_');
   $modeImageBtn.disabled = isCustomNew;
   $modeImageBtn.title = isCustomNew ? '新創文字物件僅支援文字藝術師' : '';
@@ -926,11 +1456,73 @@ function openInspector(objId) {
   $propAlignCenter.classList.toggle('active', s.align === 'center' || !s.align);
   $propAlignRight.classList.toggle('active', s.align === 'right');
 
-  $propColor.value = s.color_hex || '#ffffff';
-  $propColorHex.value = (s.color_hex || '#FFFFFF').toUpperCase();
+  const vAlign = s.vertical_align || 'middle';
+  $propValignTop.classList.toggle('active', vAlign === 'top');
+  $propValignMiddle.classList.toggle('active', vAlign === 'middle');
+  $propValignBottom.classList.toggle('active', vAlign === 'bottom');
+
+  // 填色 (單色 vs 漸層)
+  const fill = s.fill || { type: 'solid', color: s.color_hex || '#ffffff' };
+  const isGradient = fill.type === 'gradient';
+  $fillSolidBtn.classList.toggle('active', !isGradient);
+  $fillGradientBtn.classList.toggle('active', isGradient);
+  $fillSolidWrap.classList.toggle('hidden', isGradient);
+  $fillGradientWrap.classList.toggle('hidden', !isGradient);
+
+  $propColor.value = fill.color || s.color_hex || '#ffffff';
+  $propColorHex.value = (fill.color || s.color_hex || '#FFFFFF').toUpperCase();
+
+  const colors = fill.colors || ['#FFE082', '#F57C00'];
+  $propGradC1.value = colors[0] || '#FFE082';
+  $propGradC1Hex.value = (colors[0] || '#FFE082').toUpperCase();
+  $propGradC2.value = colors[1] || '#F57C00';
+  $propGradC2Hex.value = (colors[1] || '#F57C00').toUpperCase();
+  const gradAng = fill.angle !== undefined ? fill.angle : 90;
+  $propGradAngle.value = gradAng;
+  $gradAngleLabel.textContent = `${gradAng}°`;
+
+  // 外框 (Outline)
+  const outline = s.outline || { enabled: false, color: '#7A2E00', width: 2 };
+  $propOutlineEnable.checked = Boolean(outline.enabled);
+  $outlineBody.classList.toggle('hidden', !outline.enabled);
+  $propOutlineColor.value = outline.color || '#7A2E00';
+  $propOutlineColorHex.value = (outline.color || '#7A2E00').toUpperCase();
+  $propOutlineWidth.value = outline.width !== undefined ? outline.width : 2;
+
+  // 陰影 (Shadow)
+  const shadow = s.shadow || { enabled: false, color: '#000000', opacity: 0.35, offset_x: 4, offset_y: 4, blur: 8 };
+  $propShadowEnable.checked = Boolean(shadow.enabled);
+  $shadowBody.classList.toggle('hidden', !shadow.enabled);
+  $propShadowColor.value = shadow.color || '#000000';
+  $propShadowColorHex.value = (shadow.color || '#000000').toUpperCase();
+  $propShadowOpacity.value = shadow.opacity !== undefined ? shadow.opacity : 0.35;
+  $propShadowX.value = shadow.offset_x !== undefined ? shadow.offset_x : 4;
+  $propShadowY.value = shadow.offset_y !== undefined ? shadow.offset_y : 4;
+  $propShadowBlur.value = shadow.blur !== undefined ? shadow.blur : 8;
+
+  // 比例鎖定、旋轉與不透明度
+  const isLocked = edit.lock_aspect !== undefined ? Boolean(edit.lock_aspect) : (edit.mode === 'image_layer');
+  $propLockAspect.classList.toggle('active', isLocked);
+  $propLockAspect.title = isLocked ? '寬高比例已鎖定' : '寬高比例未鎖定';
+
+  const rot = edit.rotation || 0;
+  $propRotation.value = rot;
+  $propRotationSlider.value = rot;
+
+  const op = edit.opacity !== undefined ? edit.opacity : 1;
+  $propOpacity.value = op;
+  $opacityLabel.textContent = `${Math.round(op * 100)}%`;
 
   // 座標
   updateInspectorPosition(edit);
+}
+
+function openMultiInspector() {
+  $inspectorEmpty.classList.add('hidden');
+  $inspectorBody.classList.add('hidden');
+  $inspectorMulti.classList.remove('hidden');
+  $inspectorObjId.textContent = `${state.selectedObjIds.length} 個物件`;
+  $multiCountLabel.textContent = `已選取 ${state.selectedObjIds.length} 個物件`;
 }
 
 function updateInspectorPosition(edit) {
@@ -943,6 +1535,7 @@ function updateInspectorPosition(edit) {
 function closeInspector() {
   $inspectorEmpty.classList.remove('hidden');
   $inspectorBody.classList.add('hidden');
+  $inspectorMulti.classList.add('hidden');
   $inspectorObjId.textContent = '—';
 }
 
@@ -1015,11 +1608,240 @@ function setAlign(align) {
   updateCurrentStyle({ align });
 }
 
+$propValignTop.addEventListener('click', () => { pushUndo(); setVerticalAlign('top'); });
+$propValignMiddle.addEventListener('click', () => { pushUndo(); setVerticalAlign('middle'); });
+$propValignBottom.addEventListener('click', () => { pushUndo(); setVerticalAlign('bottom'); });
+
+function setVerticalAlign(valign) {
+  $propValignTop.classList.toggle('active', valign === 'top');
+  $propValignMiddle.classList.toggle('active', valign === 'middle');
+  $propValignBottom.classList.toggle('active', valign === 'bottom');
+  updateCurrentStyle({ vertical_align: valign });
+}
+
+// ── Fill (Solid vs Gradient) Bindings ────────────────────────────────────────
+$fillSolidBtn.addEventListener('click', () => setFillMode('solid'));
+$fillGradientBtn.addEventListener('click', () => setFillMode('gradient'));
+
+function setFillMode(fillType) {
+  if (!state.selectedObjId) return;
+  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
+  if (!edit) return;
+
+  pushUndo();
+  const s = edit.style || {};
+  const currentFill = s.fill || { type: 'solid', color: s.color_hex || '#FFFFFF' };
+  currentFill.type = fillType;
+
+  if (fillType === 'gradient' && (!currentFill.colors || currentFill.colors.length < 2)) {
+    currentFill.colors = [$propGradC1.value, $propGradC2.value];
+    currentFill.angle = parseInt($propGradAngle.value) || 90;
+  }
+
+  $fillSolidBtn.classList.toggle('active', fillType === 'solid');
+  $fillGradientBtn.classList.toggle('active', fillType === 'gradient');
+  $fillSolidWrap.classList.toggle('hidden', fillType === 'gradient');
+  $fillGradientWrap.classList.toggle('hidden', fillType === 'solid');
+
+  updateCurrentStyle({ fill: currentFill });
+}
+
+$propGradAngle.addEventListener('input', (e) => {
+  const angle = parseInt(e.target.value) || 0;
+  $gradAngleLabel.textContent = `${angle}°`;
+  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
+  if (!edit) return;
+  const fill = edit.style?.fill || { type: 'gradient', colors: [$propGradC1.value, $propGradC2.value], angle: 90 };
+  fill.angle = angle;
+  updateCurrentStyle({ fill });
+});
+
+[$propGradC1, $propGradC2].forEach((inp, idx) => {
+  inp.addEventListener('input', (e) => {
+    const hex = e.target.value.toUpperCase();
+    if (idx === 0) $propGradC1Hex.value = hex;
+    else $propGradC2Hex.value = hex;
+    updateGradientColors();
+  });
+});
+
+[$propGradC1Hex, $propGradC2Hex].forEach((inp, idx) => {
+  inp.addEventListener('change', (e) => {
+    let hex = e.target.value.trim();
+    if (!hex.startsWith('#')) hex = '#' + hex;
+    if (/^#[0-9A-Fa-f]{6}$/.test(hex)) {
+      pushUndo();
+      if (idx === 0) $propGradC1.value = hex;
+      else $propGradC2.value = hex;
+      updateGradientColors();
+    }
+  });
+});
+
+function updateGradientColors() {
+  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
+  if (!edit) return;
+  const fill = edit.style?.fill || { type: 'gradient', angle: 90 };
+  fill.colors = [$propGradC1.value, $propGradC2.value];
+  updateCurrentStyle({ fill });
+}
+
+// ── Outline & Shadow Bindings ────────────────────────────────────────────────
+$propOutlineEnable.addEventListener('change', (e) => {
+  pushUndo();
+  const enabled = e.target.checked;
+  $outlineBody.classList.toggle('hidden', !enabled);
+  updateCurrentStyle({
+    outline: {
+      enabled,
+      color: $propOutlineColor.value,
+      width: parseInt($propOutlineWidth.value) || 2,
+    }
+  });
+});
+
+$propOutlineColor.addEventListener('input', (e) => {
+  $propOutlineColorHex.value = e.target.value.toUpperCase();
+  updateOutlineStyle();
+});
+
+$propOutlineColorHex.addEventListener('change', (e) => {
+  let hex = e.target.value.trim();
+  if (!hex.startsWith('#')) hex = '#' + hex;
+  if (/^#[0-9A-Fa-f]{6}$/.test(hex)) {
+    pushUndo();
+    $propOutlineColor.value = hex;
+    updateOutlineStyle();
+  }
+});
+
+$propOutlineWidth.addEventListener('input', updateOutlineStyle);
+
+function updateOutlineStyle() {
+  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
+  if (!edit) return;
+  updateCurrentStyle({
+    outline: {
+      enabled: $propOutlineEnable.checked,
+      color: $propOutlineColor.value,
+      width: parseInt($propOutlineWidth.value) || 2,
+    }
+  });
+}
+
+$propShadowEnable.addEventListener('change', (e) => {
+  pushUndo();
+  const enabled = e.target.checked;
+  $shadowBody.classList.toggle('hidden', !enabled);
+  updateShadowStyle();
+});
+
+$propShadowColor.addEventListener('input', (e) => {
+  $propShadowColorHex.value = e.target.value.toUpperCase();
+  updateShadowStyle();
+});
+
+$propShadowColorHex.addEventListener('change', (e) => {
+  let hex = e.target.value.trim();
+  if (!hex.startsWith('#')) hex = '#' + hex;
+  if (/^#[0-9A-Fa-f]{6}$/.test(hex)) {
+    pushUndo();
+    $propShadowColor.value = hex;
+    updateShadowStyle();
+  }
+});
+
+[$propShadowOpacity, $propShadowX, $propShadowY, $propShadowBlur].forEach((inp) => {
+  inp.addEventListener('input', updateShadowStyle);
+});
+
+function updateShadowStyle() {
+  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
+  if (!edit) return;
+  updateCurrentStyle({
+    shadow: {
+      enabled: $propShadowEnable.checked,
+      color: $propShadowColor.value,
+      opacity: parseFloat($propShadowOpacity.value) || 0.35,
+      offset_x: parseInt($propShadowX.value) || 4,
+      offset_y: parseInt($propShadowY.value) || 4,
+      blur: parseInt($propShadowBlur.value) || 8,
+    }
+  });
+}
+
+// ── Opacity Binding ──────────────────────────────────────────────────────────
+$propOpacity.addEventListener('input', (e) => {
+  const op = parseFloat(e.target.value) || 1;
+  $opacityLabel.textContent = `${Math.round(op * 100)}%`;
+  if (!state.selectedObjId) return;
+  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
+  if (!edit) return;
+  edit.opacity = op;
+  const el = document.getElementById(`canvas-item-${edit.id}`);
+  if (el) el.style.opacity = `${op}`;
+  markDirty();
+});
+
+$propLockAspect.addEventListener('click', () => {
+  if (!state.selectedObjId) return;
+  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
+  if (!edit) return;
+
+  pushUndo();
+  const current = edit.lock_aspect !== undefined ? Boolean(edit.lock_aspect) : (edit.mode === 'image_layer');
+  edit.lock_aspect = !current;
+  $propLockAspect.classList.toggle('active', edit.lock_aspect);
+  $propLockAspect.title = edit.lock_aspect ? '寬高比例已鎖定' : '寬高比例未鎖定';
+  toast(edit.lock_aspect ? '已鎖定比例' : '已解除比例鎖定', '');
+  markDirty();
+});
+
+$propRotationSlider.addEventListener('input', (e) => {
+  const val = parseInt(e.target.value) || 0;
+  $propRotation.value = val;
+  setRotation(val, false);
+});
+
+$propRotation.addEventListener('change', (e) => {
+  let val = parseInt(e.target.value) || 0;
+  if (val > 180) val = 180;
+  if (val < -180) val = -180;
+  $propRotation.value = val;
+  $propRotationSlider.value = val;
+  pushUndo();
+  setRotation(val, true);
+});
+
+$propRotationReset.addEventListener('click', () => {
+  pushUndo();
+  $propRotation.value = 0;
+  $propRotationSlider.value = 0;
+  setRotation(0, true);
+});
+
+function setRotation(deg, commitHistory = false) {
+  if (!state.selectedObjId) return;
+  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
+  if (!edit) return;
+
+  if (commitHistory) pushUndo();
+  edit.rotation = deg;
+  const el = document.getElementById(`canvas-item-${edit.id}`);
+  if (el) {
+    updateCanvasItemStyle(el, edit, state.canvasNaturalSize.width, state.canvasNaturalSize.height);
+  }
+  markDirty();
+}
+
 $propColor.addEventListener('input', (e) => {
   const hex = e.target.value.toUpperCase();
   $propColorHex.value = hex;
   const rgb = hexToRgb(hex);
-  updateCurrentStyle({ color_hex: hex, color_rgb: rgb });
+  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
+  const fill = edit?.style?.fill || { type: 'solid', color: hex };
+  fill.color = hex;
+  updateCurrentStyle({ color_hex: hex, color_rgb: rgb, fill });
 });
 
 $propColorHex.addEventListener('change', (e) => {
@@ -1029,7 +1851,10 @@ $propColorHex.addEventListener('change', (e) => {
     pushUndo();
     $propColor.value = hex;
     const rgb = hexToRgb(hex);
-    updateCurrentStyle({ color_hex: hex.toUpperCase(), color_rgb: rgb });
+    const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
+    const fill = edit?.style?.fill || { type: 'solid', color: hex.toUpperCase() };
+    fill.color = hex.toUpperCase();
+    updateCurrentStyle({ color_hex: hex.toUpperCase(), color_rgb: rgb, fill });
   }
 });
 
@@ -1048,6 +1873,7 @@ $propColorHex.addEventListener('change', (e) => {
     const el = document.getElementById(`canvas-item-${edit.id}`);
     if (el) {
       updateCanvasItemStyle(el, edit, state.canvasNaturalSize.width, state.canvasNaturalSize.height);
+      renderItemContent(el, edit, state.selectedPageIndex);
     }
     markDirty();
   });
@@ -1072,10 +1898,12 @@ function refreshSelectedItemDOM() {
   }
 }
 
-// ── Object Actions: Add / Copy / Paste / Delete ───────────────────────────────
+// ── Object Actions: Add / Copy / Paste / Delete (支援多選群組) ───────────────
 $btnAddText.addEventListener('click', addNewTextObject);
-$btnCopyObj.addEventListener('click', copySelectedObject);
-$btnDeleteObj.addEventListener('click', deleteSelectedObject);
+$btnCopyObj.addEventListener('click', copySelectedObjects);
+$btnDeleteObj.addEventListener('click', deleteSelectedObjects);
+$btnMultiCopy.addEventListener('click', copySelectedObjects);
+$btnMultiDelete.addEventListener('click', deleteSelectedObjects);
 
 function addNewTextObject() {
   const pIdx = state.selectedPageIndex;
@@ -1101,6 +1929,8 @@ function addNewTextObject() {
     y: y,
     width: w,
     height: h,
+    rotation: 0,
+    lock_aspect: false,
     deleted: false,
     style: {
       font_name: 'Noto Sans TC',
@@ -1108,6 +1938,7 @@ function addNewTextObject() {
       bold: true,
       italic: false,
       align: 'center',
+      vertical_align: 'middle',
       color_rgb: [255, 215, 0],
       color_hex: '#FFD700',
     }
@@ -1122,27 +1953,40 @@ function addNewTextObject() {
   toast('已新增文字方塊', 'success');
 }
 
-function copySelectedObject() {
-  if (!state.selectedObjId) return;
-  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
-  if (!edit) return;
+function copySelectedObjects() {
+  const ids = state.selectedObjIds.length > 0 ? state.selectedObjIds : (state.selectedObjId ? [state.selectedObjId] : []);
+  if (ids.length === 0) return;
 
-  state.clipboard = JSON.parse(JSON.stringify(edit));
+  const itemsToCopy = [];
+  ids.forEach((id) => {
+    const edit = getObjectEdit(state.selectedPageIndex, id);
+    if (edit) itemsToCopy.push(JSON.parse(JSON.stringify(edit)));
+  });
 
-  const el = document.getElementById(`canvas-item-${state.selectedObjId}`);
-  if (el) {
-    el.classList.remove('pulse-copy');
-    void el.offsetWidth;
-    el.classList.add('pulse-copy');
-    setTimeout(() => el.classList.remove('pulse-copy'), 380);
+  if (itemsToCopy.length === 0) return;
+
+  state.clipboard = itemsToCopy;
+
+  ids.forEach((id) => {
+    const el = document.getElementById(`canvas-item-${id}`);
+    if (el) {
+      el.classList.remove('pulse-copy');
+      void el.offsetWidth;
+      el.classList.add('pulse-copy');
+      setTimeout(() => el.classList.remove('pulse-copy'), 380);
+    }
+  });
+
+  if (itemsToCopy.length === 1) {
+    const label = previewText(itemsToCopy[0].text || itemsToCopy[0].id, 14);
+    toast(`已複製物件「${label}」`, 'success');
+  } else {
+    toast(`已複製 ${itemsToCopy.length} 個物件`, 'success');
   }
-
-  const label = previewText(edit.text || edit.id, 14);
-  toast(`已複製物件「${label}」`, 'success');
 }
 
-function pasteObject() {
-  if (!state.clipboard) {
+function pasteObjects() {
+  if (!state.clipboard || !Array.isArray(state.clipboard) || state.clipboard.length === 0) {
     toast('剪貼簿是空的', '');
     return;
   }
@@ -1153,71 +1997,92 @@ function pasteObject() {
 
   pushUndo();
 
-  const newId = `custom_text_${Date.now().toString(36)}`;
   const natW = state.canvasNaturalSize.width || 1920;
   const natH = state.canvasNaturalSize.height || 1080;
+  const offset = 24;
+  const newSelectedIds = [];
 
-  const copy = JSON.parse(JSON.stringify(state.clipboard));
-  copy.id = newId;
-  copy.mode = 'wordart'; // 貼上均為文字方塊
-  const offset = 30;
-  copy.x = Math.max(0, Math.min(natW - copy.width, copy.x + offset));
-  copy.y = Math.max(0, Math.min(natH - copy.height, copy.y + offset));
-  copy.deleted = false;
+  state.clipboard.forEach((clipItem, idx) => {
+    const newId = `custom_text_${Date.now().toString(36)}_${idx}`;
+    const copy = JSON.parse(JSON.stringify(clipItem));
+    copy.id = newId;
+    copy.mode = 'wordart'; // 貼上均為文字藝術師
+    copy.x = Math.max(0, Math.min(natW - copy.width, copy.x + offset));
+    copy.y = Math.max(0, Math.min(natH - copy.height, copy.y + offset));
+    copy.deleted = false;
 
-  state.customEdits[pStr][newId] = copy;
+    state.customEdits[pStr][newId] = copy;
+    newSelectedIds.push(newId);
+  });
 
   renderInteractiveOverlay(pIdx);
   renderSidebarList(pIdx);
-  selectObject(newId);
-  markDirty();
 
-  const el = document.getElementById(`canvas-item-${newId}`);
-  if (el) {
-    el.classList.add('pop-paste');
-    setTimeout(() => el.classList.remove('pop-paste'), 300);
+  state.selectedObjIds = newSelectedIds;
+  state.selectedObjId = newSelectedIds[0];
+  syncSelectionClasses();
+
+  if (newSelectedIds.length === 1) {
+    openInspector(newSelectedIds[0]);
+  } else {
+    openMultiInspector();
   }
 
-  const label = previewText(copy.text || '文字物件', 14);
-  toast(`已貼上文字物件「${label}」`, 'success');
+  markDirty();
+
+  newSelectedIds.forEach((id) => {
+    const el = document.getElementById(`canvas-item-${id}`);
+    if (el) {
+      el.classList.add('pop-paste');
+      setTimeout(() => el.classList.remove('pop-paste'), 300);
+    }
+  });
+
+  toast(`已貼上 ${newSelectedIds.length} 個物件`, 'success');
 }
 
-function deleteSelectedObject() {
-  if (!state.selectedObjId) return;
-  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
-  if (!edit) return;
+function deleteSelectedObjects() {
+  const ids = state.selectedObjIds.length > 0 ? state.selectedObjIds : (state.selectedObjId ? [state.selectedObjId] : []);
+  if (ids.length === 0) return;
 
-  const label = previewText(edit.text || edit.id, 14);
   pushUndo();
-
   const pIdx = state.selectedPageIndex;
 
-  edit.deleted = true;
-  deselectObject();
+  ids.forEach((id) => {
+    const edit = getObjectEdit(pIdx, id);
+    if (edit) edit.deleted = true;
+  });
 
+  deselectObject();
   renderInteractiveOverlay(pIdx);
   renderSidebarList(pIdx);
   markDirty();
-  toast(`已刪除物件「${label}」`, '');
+  toast(`已刪除 ${ids.length} 個物件`, '');
 }
 
-function moveSelectedObject(dx, dy) {
-  if (!state.selectedObjId) return;
-  const edit = getObjectEdit(state.selectedPageIndex, state.selectedObjId);
-  if (!edit) return;
+function moveSelectedObjects(dx, dy) {
+  const ids = state.selectedObjIds.length > 0 ? state.selectedObjIds : (state.selectedObjId ? [state.selectedObjId] : []);
+  if (ids.length === 0) return;
 
   pushUndo();
+  const pIdx = state.selectedPageIndex;
   const natW = state.canvasNaturalSize.width || 1920;
   const natH = state.canvasNaturalSize.height || 1080;
 
-  edit.x = Math.max(0, Math.min(natW - edit.width, edit.x + dx));
-  edit.y = Math.max(0, Math.min(natH - edit.height, edit.y + dy));
+  ids.forEach((id) => {
+    const edit = getObjectEdit(pIdx, id);
+    if (edit) {
+      edit.x = Math.max(0, Math.min(natW - edit.width, edit.x + dx));
+      edit.y = Math.max(0, Math.min(natH - edit.height, edit.y + dy));
+      const el = document.getElementById(`canvas-item-${id}`);
+      if (el) updateCanvasItemStyle(el, edit, natW, natH);
+    }
+  });
 
-  const el = document.getElementById(`canvas-item-${edit.id}`);
-  if (el) {
-    updateCanvasItemStyle(el, edit, natW, natH);
+  if (state.selectedObjId) {
+    const primary = getObjectEdit(pIdx, state.selectedObjId);
+    if (primary) updateInspectorPosition(primary);
   }
-  updateInspectorPosition(edit);
   markDirty();
 }
 
@@ -1258,7 +2123,9 @@ function restoreStateAfterHistoryChange() {
   const pIdx = state.selectedPageIndex;
   renderInteractiveOverlay(pIdx);
   renderSidebarList(pIdx);
-  if (state.selectedObjId) {
+  if (state.selectedObjIds.length > 1) {
+    openMultiInspector();
+  } else if (state.selectedObjId) {
     const edit = getObjectEdit(pIdx, state.selectedObjId);
     if (edit) openInspector(state.selectedObjId);
     else closeInspector();
@@ -1277,7 +2144,7 @@ function updateUndoRedoButtons() {
 $btnUndo.addEventListener('click', undo);
 $btnRedo.addEventListener('click', redo);
 
-// ── Global Keyboard Shortcuts ─────────────────────────────────────────────────
+// ── Global Keyboard Shortcuts (Escape 取消拖曳 / 縮放 / 旋轉 / 選取) ────────
 window.addEventListener('keydown', (e) => {
   const activeEl = document.activeElement;
   const isTyping = activeEl && (
@@ -1289,9 +2156,16 @@ window.addEventListener('keydown', (e) => {
   );
   const isCtrl = e.ctrlKey || e.metaKey;
 
-  // Esc: 取消選取
+  // Esc: 若正在拖曳/縮放/旋轉則取消操作還原；否則取消選取
   if (e.key === 'Escape') {
-    if (state.selectedObjId && !isTyping) {
+    if (state.activeInteraction && typeof state.activeInteraction.cancel === 'function') {
+      e.preventDefault();
+      state.activeInteraction.cancel();
+      state.activeInteraction = null;
+      toast('已取消本次調整', '');
+      return;
+    }
+    if ((state.selectedObjIds.length > 0 || state.selectedObjId) && !isTyping) {
       e.preventDefault();
       deselectObject();
       return;
@@ -1318,14 +2192,14 @@ window.addEventListener('keydown', (e) => {
   // Ctrl+C: Copy
   if (isCtrl && e.code === 'KeyC') {
     e.preventDefault();
-    copySelectedObject();
+    copySelectedObjects();
     return;
   }
 
   // Ctrl+V: Paste
   if (isCtrl && e.code === 'KeyV') {
     e.preventDefault();
-    pasteObject();
+    pasteObjects();
     return;
   }
 
@@ -1336,15 +2210,15 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Delete / Backspace: Delete selected object
-  if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedObjId) {
+  // Delete / Backspace: Delete selected objects
+  if ((e.key === 'Delete' || e.key === 'Backspace') && (state.selectedObjIds.length > 0 || state.selectedObjId)) {
     e.preventDefault();
-    deleteSelectedObject();
+    deleteSelectedObjects();
     return;
   }
 
   // 方向鍵: 微調物件位置 (Shift 為 10px)
-  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && state.selectedObjId) {
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && (state.selectedObjIds.length > 0 || state.selectedObjId)) {
     e.preventDefault();
     const step = e.shiftKey ? 10 : 1;
     let dx = 0, dy = 0;
@@ -1352,7 +2226,7 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowRight') dx = step;
     if (e.key === 'ArrowUp') dy = -step;
     if (e.key === 'ArrowDown') dy = step;
-    moveSelectedObject(dx, dy);
+    moveSelectedObjects(dx, dy);
     return;
   }
 });

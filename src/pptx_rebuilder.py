@@ -220,13 +220,18 @@ def _rebuild_pptx(
                     custom_item=custom_item,
                 )
             else:
-                slide.shapes.add_picture(
+                pic = slide.shapes.add_picture(
                     str(image_path),
                     left,
                     top,
                     width=width,
                     height=height,
                 )
+                if custom_item and "rotation" in custom_item:
+                    try:
+                        pic.rotation = float(custom_item["rotation"])
+                    except Exception:
+                        pass
 
         # 處理使用者新增或複製出來的全新文字物件
         for edit_key, new_item in page_edits.items():
@@ -321,7 +326,7 @@ def _add_wordart_textbox(
     """以 python-pptx TextBox 模擬 WordArt 樣式展示文字（支援自訂樣式覆寫）。"""
     from pptx.dml.color import RGBColor
     from pptx.util import Pt
-    from pptx.enum.text import PP_ALIGN
+    from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 
     # 文字優先順序：custom_item["text"] > obj["text"] > layer_info["text"]
     text = ""
@@ -347,7 +352,7 @@ def _add_wordart_textbox(
     font_italic = bool(custom_style.get("italic", False))
     font_name = custom_style.get("font_name") or style.get("font_name_hint") or "Noto Sans TC"
 
-    # 對齊方式
+    # 水平對齊方式
     align_str = custom_style.get("align", "center").lower()
     align_map = {
         "left": PP_ALIGN.LEFT,
@@ -356,9 +361,29 @@ def _add_wordart_textbox(
     }
     pp_align = align_map.get(align_str, PP_ALIGN.CENTER)
 
+    # 垂直對齊方式
+    valign_str = (custom_style.get("vertical_align") or "middle").lower()
+    valign_map = {
+        "top": MSO_ANCHOR.TOP,
+        "middle": MSO_ANCHOR.MIDDLE,
+        "center": MSO_ANCHOR.MIDDLE,
+        "bottom": MSO_ANCHOR.BOTTOM,
+    }
+    mso_valign = valign_map.get(valign_str, MSO_ANCHOR.MIDDLE)
+
     txBox = slide.shapes.add_textbox(left, top, width, height)
+    if custom_item and "rotation" in custom_item:
+        try:
+            txBox.rotation = float(custom_item["rotation"])
+        except Exception:
+            pass
+
     tf = txBox.text_frame
     tf.word_wrap = True
+    try:
+        tf.vertical_anchor = mso_valign
+    except Exception:
+        pass
 
     # 處理多行文字
     lines = text.split("\n")
@@ -374,10 +399,68 @@ def _add_wordart_textbox(
         run.font.bold = likely_bold
         run.font.italic = font_italic
         run.font.name = font_name
-        try:
-            run.font.color.rgb = RGBColor(int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
-        except Exception:
-            pass
+
+        # 1. 填色處理 (單色 vs 漸層 OpenXML)
+        fill = custom_style.get("fill") or {}
+        is_gradient = (fill.get("type") == "gradient" and isinstance(fill.get("colors"), list) and len(fill.get("colors")) >= 2)
+
+        if is_gradient:
+            try:
+                from pptx.oxml import parse_xml
+                from pptx.oxml.ns import nsdecls
+                c1 = str(fill["colors"][0]).lstrip("#")
+                c2 = str(fill["colors"][1]).lstrip("#")
+                ang = int(fill.get("angle", 90)) * 60000
+                rPr = run._r.get_or_add_rPr()
+                for child in list(rPr):
+                    if child.tag.endswith("solidFill") or child.tag.endswith("gradFill"):
+                        rPr.remove(child)
+                grad_xml = f'<a:gradFill {nsdecls("a")}><a:gsLst><a:gs pos="0"><a:srgbClr val="{c1}"/></a:gs><a:gs pos="100000"><a:srgbClr val="{c2}"/></a:gs></a:gsLst><a:lin ang="{ang}"/></a:gradFill>'
+                rPr.append(parse_xml(grad_xml))
+            except Exception:
+                try:
+                    run.font.color.rgb = RGBColor(int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
+                except Exception:
+                    pass
+        else:
+            try:
+                run.font.color.rgb = RGBColor(int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
+            except Exception:
+                pass
+
+        # 2. 文字外框 (Outline OpenXML)
+        outline = custom_style.get("outline") or {}
+        if outline.get("enabled") and outline.get("width", 0) > 0:
+            try:
+                from pptx.oxml import parse_xml
+                from pptx.oxml.ns import nsdecls
+                out_color = str(outline.get("color", "#7A2E00")).lstrip("#")
+                out_w = int(outline.get("width", 2) * 12700)
+                rPr = run._r.get_or_add_rPr()
+                ln_xml = f'<a:ln {nsdecls("a")} w="{out_w}"><a:solidFill><a:srgbClr val="{out_color}"/></a:solidFill></a:ln>'
+                rPr.append(parse_xml(ln_xml))
+            except Exception:
+                pass
+
+        # 3. 文字陰影 (Shadow OpenXML)
+        shadow = custom_style.get("shadow") or {}
+        if shadow.get("enabled"):
+            try:
+                import math
+                from pptx.oxml import parse_xml
+                from pptx.oxml.ns import nsdecls
+                sh_color = str(shadow.get("color", "#000000")).lstrip("#")
+                sh_opacity = int(float(shadow.get("opacity", 0.35)) * 100000)
+                sx = int(shadow.get("offset_x", 4))
+                sy = int(shadow.get("offset_y", 4))
+                dist_emu = int(math.hypot(sx, sy) * 12700)
+                dir_deg = int((math.atan2(sy, sx) * 180 / math.pi) % 360 * 60000)
+                blur_emu = int(int(shadow.get("blur", 8)) * 12700)
+                rPr = run._r.get_or_add_rPr()
+                sh_xml = f'<a:effectLst {nsdecls("a")}><a:outerShdw blurRad="{blur_emu}" dist="{dist_emu}" dir="{dir_deg}" algn="tl"><a:srgbClr val="{sh_color}"><a:alpha val="{sh_opacity}"/></a:srgbClr></a:outerShdw></a:effectLst>'
+                rPr.append(parse_xml(sh_xml))
+            except Exception:
+                pass
 
 
 def _resolve_background_path(output_dir: Path, page: dict) -> Path:

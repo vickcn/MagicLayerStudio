@@ -283,6 +283,8 @@
           <div class="img-loading hidden" id="img-loading">載入中…</div>
           <div class="canvas-stage" id="canvas-stage">
             <img id="main-img" src="" alt="底圖預覽" style="opacity:0;">
+            <!-- 對齊吸附導引線層 -->
+            <div class="canvas-guides" id="canvas-guides"></div>
             <!-- 互動文字物件疊層 -->
             <div class="canvas-overlay" id="canvas-overlay"></div>
           </div>
@@ -291,8 +293,11 @@
             <span class="hint-item"><span class="kbd">Ctrl+Z / Y</span> 復原重做</span>
             <span class="hint-item"><span class="kbd">Ctrl+C / V</span> 複製貼上</span>
             <span class="hint-item"><span class="kbd">Del</span> 刪除</span>
-            <span class="hint-item"><span class="kbd">方向鍵</span> 微調位置</span>
-            <span class="hint-item"><span class="kbd">Esc</span> 取消選取</span>
+            <span class="hint-item"><span class="kbd">方向鍵</span> (Shift=10px) 移動</span>
+            <span class="hint-item"><span class="kbd">Shift</span> 鎖定比例/15°</span>
+            <span class="hint-item"><span class="kbd">Alt</span> 中心縮放</span>
+            <span class="hint-item"><span class="kbd">Ctrl+點擊</span> 多選</span>
+            <span class="hint-item"><span class="kbd">Esc</span> 放棄拖曳/取消選取</span>
           </div>
         </div>
 
@@ -308,6 +313,24 @@
 
             <div class="inspector-empty" id="inspector-empty">
               點選畫布或清單中的文字物件以進行編輯
+            </div>
+
+            <!-- 多選狀態面板 -->
+            <div class="inspector-multi hidden" id="inspector-multi">
+              <div class="multi-header">
+                <span class="multi-title" id="multi-count-label">已選取 0 個物件</span>
+              </div>
+              <p class="text-xs text-hint">可使用鍵盤方向鍵集體移動，或使用以下快捷操作：</p>
+              <div class="multi-actions">
+                <button type="button" class="btn btn-sm btn-outline flex-1" id="btn-multi-copy" title="複製全部選取物件 (Ctrl+C)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  複製
+                </button>
+                <button type="button" class="btn btn-sm btn-ghost btn-danger flex-1" id="btn-multi-delete" title="刪除全部選取物件 (Del)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  刪除
+                </button>
+              </div>
             </div>
 
             <div class="inspector-body hidden" id="inspector-body">
@@ -350,9 +373,9 @@
                 </div>
 
                 <div class="form-row items-center">
-                  <!-- 粗體 / 斜體 / 對齊 -->
+                  <!-- 粗體 / 斜體 / 水平對齊 -->
                   <div class="form-group flex-1">
-                    <label class="form-label">樣式與對齊</label>
+                    <label class="form-label">樣式與水平對齊</label>
                     <div class="btn-group">
                       <button type="button" class="btn-toggle" id="prop-bold" title="粗體"><b>B</b></button>
                       <button type="button" class="btn-toggle" id="prop-italic" title="斜體"><i>I</i></button>
@@ -368,31 +391,180 @@
                     </div>
                   </div>
 
-                  <!-- 色彩 -->
-                  <div class="form-group" style="width: 80px;">
-                    <label class="form-label" for="prop-color">文字色彩</label>
-                    <div class="color-picker-wrap">
-                      <input type="color" id="prop-color" class="color-input" value="#ffffff">
-                      <input type="text" id="prop-color-hex" class="form-input form-input-sm" value="#FFFFFF">
+                  <!-- 色彩 / 填色模式 -->
+                  <div class="form-group" style="width: 100px;">
+                    <label class="form-label">填色模式</label>
+                    <div class="segmented-control">
+                      <button type="button" class="seg-btn active" id="fill-solid-btn" data-fill="solid">單色</button>
+                      <button type="button" class="seg-btn" id="fill-gradient-btn" data-fill="gradient">漸層</button>
                     </div>
                   </div>
                 </div>
+
+                <!-- 單色填色 -->
+                <div class="form-group" id="fill-solid-wrap">
+                  <label class="form-label" for="prop-color">文字單色</label>
+                  <div class="color-picker-wrap">
+                    <input type="color" id="prop-color" class="color-input" value="#ffffff">
+                    <input type="text" id="prop-color-hex" class="form-input form-input-sm" value="#FFFFFF">
+                  </div>
+                </div>
+
+                <!-- 漸層填色 -->
+                <div class="form-group hidden" id="fill-gradient-wrap">
+                  <div class="form-row items-center">
+                    <div class="flex-1">
+                      <label class="form-label">起始色彩</label>
+                      <div class="color-picker-wrap">
+                        <input type="color" id="prop-grad-c1" class="color-input" value="#FFE082">
+                        <input type="text" id="prop-grad-c1-hex" class="form-input form-input-sm" value="#FFE082">
+                      </div>
+                    </div>
+                    <div class="flex-1">
+                      <label class="form-label">結束色彩</label>
+                      <div class="color-picker-wrap">
+                        <input type="color" id="prop-grad-c2" class="color-input" value="#F57C00">
+                        <input type="text" id="prop-grad-c2-hex" class="form-input form-input-sm" value="#F57C00">
+                      </div>
+                    </div>
+                  </div>
+                  <div class="form-row items-center mt-1">
+                    <label class="form-label flex-1" for="prop-grad-angle">漸層角度: <span id="grad-angle-label">90°</span></label>
+                    <input type="range" id="prop-grad-angle" min="0" max="360" step="15" value="90" class="rotation-slider flex-2">
+                  </div>
+                </div>
+
+                <!-- 垂直對齊 -->
+                <div class="form-group">
+                  <label class="form-label">垂直對齊</label>
+                  <div class="btn-group">
+                    <button type="button" class="btn-toggle" id="prop-valign-top" title="靠頂對齊">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="4" x2="20" y2="4"/><rect x="7" y="7" width="10" height="13" rx="1"/></svg>
+                      頂部
+                    </button>
+                    <button type="button" class="btn-toggle active" id="prop-valign-middle" title="垂直置中">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="12" x2="20" y2="12"/><rect x="7" y="6" width="10" height="12" rx="1"/></svg>
+                      垂直置中
+                    </button>
+                    <button type="button" class="btn-toggle" id="prop-valign-bottom" title="靠底對齊">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="20" x2="20" y2="20"/><rect x="7" y="4" width="10" height="13" rx="1"/></svg>
+                      底部
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 文字外框效果 (Outline) -->
+                <div class="effect-box">
+                  <div class="effect-header">
+                    <label class="checkbox-label">
+                      <input type="checkbox" id="prop-outline-enable">
+                      <span class="form-label">文字外框 (Outline)</span>
+                    </label>
+                  </div>
+                  <div class="effect-body hidden" id="outline-body">
+                    <div class="form-row items-center">
+                      <div class="flex-1">
+                        <label class="form-label">外框色彩</label>
+                        <div class="color-picker-wrap">
+                          <input type="color" id="prop-outline-color" class="color-input" value="#7A2E00">
+                          <input type="text" id="prop-outline-color-hex" class="form-input form-input-sm" value="#7A2E00">
+                        </div>
+                      </div>
+                      <div style="width: 70px;">
+                        <label class="form-label" for="prop-outline-width">粗細 (px)</label>
+                        <input type="number" id="prop-outline-width" class="form-input form-input-sm" min="1" max="10" step="1" value="2">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 文字陰影效果 (Shadow) -->
+                <div class="effect-box">
+                  <div class="effect-header">
+                    <label class="checkbox-label">
+                      <input type="checkbox" id="prop-shadow-enable">
+                      <span class="form-label">文字陰影 (Shadow)</span>
+                    </label>
+                  </div>
+                  <div class="effect-body hidden" id="shadow-body">
+                    <div class="form-row items-center">
+                      <div class="flex-1">
+                        <label class="form-label">陰影色彩</label>
+                        <div class="color-picker-wrap">
+                          <input type="color" id="prop-shadow-color" class="color-input" value="#000000">
+                          <input type="text" id="prop-shadow-color-hex" class="form-input form-input-sm" value="#000000">
+                        </div>
+                      </div>
+                      <div style="width: 70px;">
+                        <label class="form-label" for="prop-shadow-opacity">濃度</label>
+                        <input type="number" id="prop-shadow-opacity" class="form-input form-input-sm" min="0" max="1" step="0.05" value="0.35">
+                      </div>
+                    </div>
+                    <div class="form-row mt-1">
+                      <div class="flex-1">
+                        <label class="form-label" for="prop-shadow-x">X 偏移</label>
+                        <input type="number" id="prop-shadow-x" class="form-input form-input-sm" min="-50" max="50" step="1" value="4">
+                      </div>
+                      <div class="flex-1">
+                        <label class="form-label" for="prop-shadow-y">Y 偏移</label>
+                        <input type="number" id="prop-shadow-y" class="form-input form-input-sm" min="-50" max="50" step="1" value="4">
+                      </div>
+                      <div class="flex-1">
+                        <label class="form-label" for="prop-shadow-blur">模糊 (px)</label>
+                        <input type="number" id="prop-shadow-blur" class="form-input form-input-sm" min="0" max="50" step="1" value="8">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
               </div>
 
-              <!-- 座標與尺寸 (可手動微調或查看) -->
+              <!-- 座標、尺寸與縮放控制 -->
               <div class="form-row">
                 <div class="form-group flex-1">
                   <label class="form-label">座標 X / Y</label>
                   <div class="flex gap-4">
-                    <input type="number" id="prop-pos-x" class="form-input form-input-sm" title="X">
-                    <input type="number" id="prop-pos-y" class="form-input form-input-sm" title="Y">
+                    <input type="number" id="prop-pos-x" class="form-input form-input-sm" title="X 座標">
+                    <input type="number" id="prop-pos-y" class="form-input form-input-sm" title="Y 座標">
                   </div>
                 </div>
                 <div class="form-group flex-1">
-                  <label class="form-label">寬度 / 高度</label>
+                  <div class="flex items-center justify-between">
+                    <label class="form-label">寬度 / 高度</label>
+                    <button type="button" class="btn-icon-toggle active" id="prop-lock-aspect" title="鎖定寬高比例">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    </button>
+                  </div>
                   <div class="flex gap-4">
                     <input type="number" id="prop-pos-w" class="form-input form-input-sm" title="寬度">
                     <input type="number" id="prop-pos-h" class="form-input form-input-sm" title="高度">
+                  </div>
+                </div>
+              </div>
+
+              <!-- 旋轉角度與整體不透明度 -->
+              <div class="form-row">
+                <div class="form-group flex-1">
+                  <div class="flex items-center justify-between">
+                    <label class="form-label" for="prop-rotation">旋轉角度</label>
+                    <button type="button" class="btn-link-sm" id="prop-rotation-reset" title="重設旋轉角度為 0°">0° 重設</button>
+                  </div>
+                  <div class="rotation-control-wrap">
+                    <input type="range" id="prop-rotation-slider" min="-180" max="180" step="1" value="0" class="rotation-slider">
+                    <div class="rotation-num-wrap">
+                      <input type="number" id="prop-rotation" class="form-input form-input-sm text-center" min="-180" max="180" step="1" value="0">
+                      <span class="rotation-unit">°</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="form-group flex-1">
+                  <div class="flex items-center justify-between">
+                    <label class="form-label" for="prop-opacity">不透明度</label>
+                    <span class="text-xs text-sub" id="opacity-label">100%</span>
+                  </div>
+                  <div class="rotation-control-wrap">
+                    <input type="range" id="prop-opacity" min="0" max="1" step="0.05" value="1" class="rotation-slider">
                   </div>
                 </div>
               </div>
