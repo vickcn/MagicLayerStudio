@@ -15,8 +15,8 @@ class PipelineOptions:
     min_score: float = 0.50
     padding: int = 8
     debug_outputs: bool = True
-    dilate_kernel_size: int = 31
-    inpaint_radius: int = 5
+    dilate_kernel_size: int = 3
+    inpaint_radius: int = 1
     inpaint_backend: str = "telea"
     harmonize: bool = True
     ocr_lang: str = "ch"

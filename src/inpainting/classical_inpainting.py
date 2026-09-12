@@ -72,6 +72,26 @@ def create_inpaint_mask(
     )
 
 
+def create_conservative_inpaint_mask(
+    combined_text_mask: np.ndarray,
+    kernel_size: int = 3,
+    max_kernel_size: int = 7,
+) -> tuple[np.ndarray, int]:
+    """Make a small text-only repair mask safe for semantic backgrounds.
+
+    Legacy requests can carry a much larger dilation value. Classical
+    inpainting cannot reconstruct faces or objects behind a large text block,
+    so retain only the text alpha and cap its expansion.
+    """
+    effective_kernel = max(1, min(int(kernel_size), max_kernel_size))
+    if effective_kernel % 2 == 0:
+        effective_kernel -= 1
+
+    text_binary = (combined_text_mask >= 32).astype(np.uint8) * 255
+    kernel = np.ones((effective_kernel, effective_kernel), np.uint8)
+    return cv2.dilate(text_binary, kernel, iterations=1), effective_kernel
+
+
 def build_block_text_mask_from_layers(
     layers: Sequence[dict],
     canvas_size: tuple[int, int],
@@ -173,8 +193,8 @@ def run_classical_inpainting_baseline(
     image_path: Path,
     output_dir: Path,
     layers: Sequence[dict],
-    dilate_kernel_size: int = 15,
-    inpaint_radius: int = 5,
+    dilate_kernel_size: int = 3,
+    inpaint_radius: int = 1,
 ) -> dict:
     image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if image is None:
@@ -186,15 +206,8 @@ def run_classical_inpainting_baseline(
         layers,
     )
     
-    block_text_mask = build_block_text_mask_from_layers(
-        layers=layers,
-        canvas_size=image.shape[:2],
-        padding=max(8, dilate_kernel_size),
-    )
-
-    inpaint_mask = create_hybrid_inpaint_mask(
-        combined_text_mask=combined_text_mask,
-        block_text_mask=block_text_mask,
+    inpaint_mask, effective_dilate_kernel_size = create_conservative_inpaint_mask(
+        combined_text_mask,
         kernel_size=dilate_kernel_size,
     )
 
@@ -263,8 +276,9 @@ def run_classical_inpainting_baseline(
             "source_mask_ratio": float(np.count_nonzero(source_mask_binary) / source_mask_binary.size),
             "inpaint_mask_pixels": int(np.count_nonzero(mask_binary)),
             "inpaint_mask_ratio": float(np.count_nonzero(mask_binary) / mask_binary.size),
-            # "dilate_kernel_size": 5,
-            "dilate_kernel_size": dilate_kernel_size,
+            "mode": "conservative_alpha",
+            "requested_dilate_kernel_size": dilate_kernel_size,
+            "dilate_kernel_size": effective_dilate_kernel_size,
             "dilate_iterations": 1,
         },
         "inpainting": {

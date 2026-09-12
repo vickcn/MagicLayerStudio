@@ -161,8 +161,8 @@ function getParams() {
     pdf_dpi:       parseInt($('p-pdf-dpi').value) || 120,
     padding:       parseInt($('p-padding').value) || 8,
     min_score:     parseFloat($('p-min-score').value) || 0.50,
-    dilate_kernel: parseInt($('p-dilate-kernel').value) || 31,
-    inpaint_radius:parseInt($('p-inpaint-radius').value) || 5,
+    dilate_kernel: parseInt($('p-dilate-kernel').value) || 3,
+    inpaint_radius:parseInt($('p-inpaint-radius').value) || 1,
     inpaint_backend: $('p-inpaint-backend').value,
     rebuild_pptx:  true,
   };

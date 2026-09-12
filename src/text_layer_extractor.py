@@ -92,6 +92,78 @@ def estimate_text_mask(crop: np.ndarray) -> np.ndarray:
     return cv2.GaussianBlur(mask, (3, 3), 0)
 
 
+def estimate_ocr_constrained_text_mask(
+    crop: np.ndarray,
+    polygon: np.ndarray,
+) -> np.ndarray:
+    """Extract bright, outlined text only inside a trusted OCR polygon.
+
+    This is a fallback for backgrounds whose border colours vary too much for
+    ``estimate_text_mask`` to infer one representative background colour.
+    """
+    if crop.size == 0:
+        return np.zeros((1, 1), dtype=np.uint8)
+
+    polygon_mask = build_polygon_mask(crop.shape[:2], polygon)
+    if not np.any(polygon_mask):
+        return np.zeros(crop.shape[:2], dtype=np.uint8)
+
+    polygon_mask = cv2.dilate(
+        polygon_mask,
+        np.ones((3, 3), np.uint8),
+        iterations=1,
+    )
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+    bright_text = (
+        (hsv[:, :, 1] <= 105)
+        & (hsv[:, :, 2] >= 145)
+        & (polygon_mask > 0)
+    ).astype(np.uint8)
+    bright_text = cv2.morphologyEx(
+        bright_text,
+        cv2.MORPH_OPEN,
+        np.ones((2, 2), np.uint8),
+    )
+    bright_text = cv2.morphologyEx(
+        bright_text,
+        cv2.MORPH_CLOSE,
+        np.ones((2, 2), np.uint8),
+    )
+
+    outline_neighborhood = cv2.dilate(
+        bright_text,
+        np.ones((5, 5), np.uint8),
+        iterations=1,
+    )
+    dark_outline = (
+        (gray <= 105)
+        & (hsv[:, :, 1] <= 115)
+        & (outline_neighborhood > 0)
+        & (polygon_mask > 0)
+    ).astype(np.uint8)
+
+    return cv2.GaussianBlur(
+        np.maximum(bright_text, dark_outline) * 255,
+        (3, 3),
+        0,
+    )
+
+
+def mask_has_expected_coverage(
+    mask: np.ndarray,
+    polygon: np.ndarray,
+) -> bool:
+    if mask.size == 0:
+        return False
+
+    points = np.asarray(polygon, dtype=np.float32).reshape(-1, 2)
+    polygon_area = max(1.0, float(cv2.contourArea(points)))
+    minimum_pixels = max(20, round(polygon_area * 0.06))
+    return int(np.count_nonzero(mask >= 32)) >= minimum_pixels
+
+
 def build_polygon_mask(
     shape: tuple[int, int],
     poly: np.ndarray,
@@ -426,6 +498,10 @@ def extract_text_layers(options: ExtractionOptions) -> dict:
             crop_poly[:, 0] -= px1
             crop_poly[:, 1] -= py1
             mask = refine_text_mask(mask, crop_poly)
+            if not mask_has_expected_coverage(mask, crop_poly):
+                fallback_mask = estimate_ocr_constrained_text_mask(crop, crop_poly)
+                if np.any(fallback_mask >= 32):
+                    mask = fallback_mask
         rgba = make_rgba(crop, mask)
 
         filename = f"text_{layer_index:03d}_{sanitize_text(text)}.png"

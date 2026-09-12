@@ -432,8 +432,8 @@ def start_processing(
     pdf_dpi: int = 120,
     padding: int = 8,
     min_score: float = 0.50,
-    dilate_kernel: int = 31,
-    inpaint_radius: int = 5,
+    dilate_kernel: int = 3,
+    inpaint_radius: int = 1,
     inpaint_backend: str = "telea",
     rebuild_pptx: bool = True,
 ):
@@ -1076,4 +1076,3 @@ def google_session_info(request: Request) -> dict[str, Any]:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("web.backend.app:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), reload=True)
-

@@ -35,12 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-dk", "--dilate-kernel",
         type=int,
-        default=31,
+        default=3,
     )
     parser.add_argument(
         "-ir", "--inpaint-radius",
         type=int,
-        default=5,
+        default=1,
         help="OpenCV inpainting neighborhood radius",
     )
     parser.add_argument("-pdi", "--pdf-dpi", type=int, default=120)

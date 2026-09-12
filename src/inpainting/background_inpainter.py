@@ -23,8 +23,8 @@ def inpaint_background(
     layers: Sequence[dict],
     objects: Sequence[dict],
     backend: str = "telea",
-    dilate_kernel_size: int = 15,
-    inpaint_radius: int = 5,
+    dilate_kernel_size: int = 3,
+    inpaint_radius: int = 1,
     harmonize: bool = True,
     harmonizer: BackgroundHarmonizer | None = None,
 ) -> Path | None:
@@ -169,8 +169,8 @@ def _run_sd(
     output_dir: Path,
     layers: Sequence[dict],
     objects: Sequence[dict],
-    dilate_kernel_size: int = 15,
-    inpaint_radius: int = 5,
+    dilate_kernel_size: int = 3,
+    inpaint_radius: int = 1,
     harmonize: bool = True,
     harmonizer: BackgroundHarmonizer | None = None,
 ) -> Path:
