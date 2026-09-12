@@ -282,6 +282,15 @@
           <button class="btn btn-sm btn-ghost" id="btn-discard-draft" disabled title="放棄本頁變更並還原至原始偵測狀態">
             放棄變更
           </button>
+          <button class="btn btn-sm btn-ghost" id="btn-toggle-panels" title="折疊/展開側邊設定面板">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+            <span id="label-toggle-panels">面板</span>
+          </button>
+          <button class="btn btn-sm btn-outline" id="btn-fullscreen" title="全螢幕編輯模式 (Esc 退出)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" id="icon-fullscreen-enter"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" class="hidden" id="icon-fullscreen-exit"><path d="M4 14h6v6m10-10h-6V4m0 16v-6h6M10 4v6H4"/></svg>
+            <span id="label-fullscreen">全螢幕</span>
+          </button>
           <button class="btn btn-sm btn-primary" id="btn-save-draft" disabled title="儲存本頁圖層與樣式設定 (Ctrl+S)">
             儲存變更
           </button>
@@ -318,9 +327,15 @@
           <!-- 屬性編輯面板 -->
           <div class="inspector-panel" id="inspector-panel">
             <div class="inspector-header">
-              <span class="inspector-title" id="inspector-title">物件屬性設定</span>
-              <span class="badge badge-gray" id="inspector-obj-id">—</span>
+              <div class="flex items-center gap-6">
+                <span class="inspector-title" id="inspector-title">物件屬性設定</span>
+                <span class="badge badge-gray" id="inspector-obj-id">—</span>
+              </div>
+              <button type="button" class="btn-panel-minimize" id="btn-minimize-inspector" title="最小化/展開屬性面板" aria-label="最小化屬性面板">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
             </div>
+            <div class="inspector-collapsible-wrap" id="inspector-collapsible-wrap">
 
             <div class="inspector-empty" id="inspector-empty">
               點選畫布或清單中的文字物件以進行編輯
@@ -591,14 +606,21 @@
                   刪除物件
                 </button>
               </div>
-
+            </div>
             </div>
           </div>
 
           <!-- 各文字圖層清單 -->
           <div class="layers-sidebar" id="layers-sidebar">
-            <p class="layer-label">圖層列表</p>
-            <div class="text-sm text-hint">選擇頁面後顯示</div>
+            <div class="layers-header">
+              <p class="layer-label">圖層列表</p>
+              <button type="button" class="btn-panel-minimize" id="btn-minimize-layers" title="最小化/展開圖層列表" aria-label="最小化圖層列表">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+            </div>
+            <div class="layers-collapsible-wrap" id="layers-collapsible-wrap">
+              <div class="text-sm text-hint">選擇頁面後顯示</div>
+            </div>
           </div>
 
         </div>
@@ -638,6 +660,6 @@
 <!-- Toast 容器 -->
 <div id="toast-container"></div>
 
-<script src="app.js?v=20260912_v3"></script>
+<script src="app.js?v=20260913_v1"></script>
 </body>
 </html>

@@ -1566,10 +1566,171 @@ select { padding: 4px 8px; }
   .btn { min-height: 38px; }
 }
 
+@media (max-width: 640px), (pointer: coarse) {
+  .resize-handle {
+    width: 10px;
+    height: 10px;
+  }
+  .handle-nw { top: -5px; left: -5px; }
+  .handle-n  { top: -5px; left: calc(50% - 5px); }
+  .handle-ne { top: -5px; right: -5px; }
+  .handle-e  { top: calc(50% - 5px); right: -5px; }
+  .handle-se { bottom: -5px; right: -5px; }
+  .handle-s  { bottom: -5px; left: calc(50% - 5px); }
+  .handle-sw { bottom: -5px; left: -5px; }
+  .handle-w  { top: calc(50% - 5px); left: -5px; }
+  .rotate-handle {
+    width: 14px;
+    height: 14px;
+    top: -28px;
+    left: calc(50% - 7px);
+  }
+  .rotate-handle-stem {
+    height: 22px;
+    top: -22px;
+  }
+}
+
+/* ── 全螢幕模式 (Fullscreen Canvas Mode) ── */
+.page-detail.is-fullscreen {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 1200 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  border-radius: 0 !important;
+  border: none !important;
+  display: flex !important;
+  flex-direction: column !important;
+  background: var(--bg-ink) !important;
+}
+.page-detail.is-fullscreen .page-detail-header {
+  background: rgba(30, 32, 33, 0.95);
+  color: #f0ede6;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  z-index: 10;
+  flex-shrink: 0;
+}
+.page-detail.is-fullscreen .page-detail-header .page-title {
+  color: #fff;
+}
+.page-detail.is-fullscreen .view-tab {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #ddd;
+}
+.page-detail.is-fullscreen .view-tab:hover {
+  border-color: var(--primary-soft);
+  color: #fff;
+}
+.page-detail.is-fullscreen .view-tab.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.page-detail.is-fullscreen .btn-ghost {
+  color: #e0dcd5;
+}
+.page-detail.is-fullscreen .btn-outline {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.06);
+}
+.page-detail.is-fullscreen .btn-outline:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+.page-detail.is-fullscreen .page-detail-body {
+  flex: 1;
+  min-height: 0;
+  height: calc(100vh - 60px);
+  position: relative;
+}
+.page-detail.is-fullscreen .canvas-container {
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: none !important;
+  padding: 24px !important;
+}
+.page-detail.is-fullscreen .canvas-stage {
+  max-height: calc(100vh - 120px) !important;
+}
+.page-detail.is-fullscreen .canvas-stage img#main-img {
+  max-height: calc(100vh - 120px) !important;
+}
+
+/* 全螢幕模式下的側邊面板變成浮動抽屜（可縮小） */
+.page-detail.is-fullscreen .detail-sidebar {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  bottom: 14px;
+  width: min(340px, calc(100vw - 28px));
+  max-height: none;
+  border-radius: var(--radius);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.38);
+  z-index: 50;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+/* 側邊面板整體收合 (Collapsed Panels) */
+.page-detail.sidebar-collapsed .detail-sidebar {
+  display: none !important;
+}
+.page-detail.sidebar-collapsed .page-detail-body {
+  grid-template-columns: 1fr !important;
+}
+
+/* ── Panel Minimize Toggle & Headers ── */
+.btn-panel-minimize {
+  background: none;
+  border: none;
+  color: var(--text-hint);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+.btn-panel-minimize:hover {
+  background: var(--surface-tint);
+  color: var(--text);
+}
+.layers-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+/* 屬性面板最小化狀態 */
+.inspector-panel.is-minimized {
+  padding-bottom: 8px;
+}
+.inspector-panel.is-minimized .inspector-collapsible-wrap {
+  display: none !important;
+}
+
+/* 圖層列表最小化狀態 */
+.layers-sidebar.is-minimized {
+  flex: 0 0 auto !important;
+  min-height: auto !important;
+  overflow: hidden !important;
+}
+.layers-sidebar.is-minimized .layers-collapsible-wrap {
+  display: none !important;
+}
+
 /* ── Utility ── */
 .hidden { display: none !important; }
 .flex { display: flex; }
 .items-center { align-items: center; }
+.gap-6 { gap: 6px; }
 .gap-8 { gap: 8px; }
 .mt-8 { margin-top: 8px; }
 .mt-16 { margin-top: 16px; }

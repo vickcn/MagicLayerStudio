@@ -61,6 +61,12 @@ const $btnRedo         = $('btn-redo');
 const $btnAddText      = $('btn-add-text');
 const $btnSaveDraft    = $('btn-save-draft');
 const $btnDiscardDraft = $('btn-discard-draft');
+const $btnFullscreen   = $('btn-fullscreen');
+const $labelFullscreen = $('label-fullscreen');
+const $iconFullscreenEnter = $('icon-fullscreen-enter');
+const $iconFullscreenExit  = $('icon-fullscreen-exit');
+const $btnTogglePanels = $('btn-toggle-panels');
+const $labelTogglePanels = $('label-toggle-panels');
 
 const $canvasContainer = $('canvas-container');
 const $canvasStage     = $('canvas-stage');
@@ -70,6 +76,9 @@ const $canvasOverlay   = $('canvas-overlay');
 const $imgLoading      = $('img-loading');
 
 const $layersSidebar   = $('layers-sidebar');
+const $btnMinimizeLayers = $('btn-minimize-layers');
+const $layersCollapsibleWrap = $('layers-collapsible-wrap');
+
 const $actionBar       = $('action-bar');
 const $actionInfo      = $('action-info');
 const $btnDownload     = $('btn-download');
@@ -92,6 +101,8 @@ const $confirmSubmit   = $('confirm-submit');
 
 // Inspector DOM
 const $inspectorPanel   = $('inspector-panel');
+const $btnMinimizeInspector = $('btn-minimize-inspector');
+const $inspectorCollapsibleWrap = $('inspector-collapsible-wrap');
 const $inspectorEmpty   = $('inspector-empty');
 const $inspectorMulti   = $('inspector-multi');
 const $multiCountLabel  = $('multi-count-label');
@@ -1141,14 +1152,21 @@ function attachDragAndSelect(el, objId, pageIndex) {
     }
     e.stopPropagation();
 
+    const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
+    const wasAlreadySelected = state.selectedObjIds.includes(objId);
+
     const isMultiKey = e.ctrlKey || e.metaKey || e.shiftKey;
     if (isMultiKey) {
       toggleObjectSelection(objId);
       return;
     }
 
-    if (!state.selectedObjIds.includes(objId)) {
+    if (!wasAlreadySelected) {
       selectObject(objId);
+      // 行動裝置／觸控螢幕防誤觸：未選取物件第一次點擊僅「選中」（亮邊框與控制點），不立即開始拖曳
+      if (isTouch) {
+        return;
+      }
     }
 
     const stageRect = $canvasStage.getBoundingClientRect();
@@ -1158,6 +1176,7 @@ function attachDragAndSelect(el, objId, pageIndex) {
 
     const startMouseX = e.clientX;
     const startMouseY = e.clientY;
+    const moveThresholdPx = isTouch ? 6 : 2; // 觸控防手震閾值
 
     const initialPositions = new Map();
     state.selectedObjIds.forEach((id) => {
@@ -1196,7 +1215,10 @@ function attachDragAndSelect(el, objId, pageIndex) {
       const dxPx = moveEvent.clientX - startMouseX;
       const dyPx = moveEvent.clientY - startMouseY;
 
-      if (!hasMoved && (Math.abs(dxPx) > 2 || Math.abs(dyPx) > 2)) {
+      if (!hasMoved) {
+        if (Math.abs(dxPx) < moveThresholdPx && Math.abs(dyPx) < moveThresholdPx) {
+          return;
+        }
         hasMoved = true;
         pushUndo();
       }
@@ -1274,6 +1296,9 @@ function attachResizeHandle(handleEl, dir, objId, pageIndex) {
     const startH = edit.height;
     const initialAspect = startW / (startH || 1);
 
+    const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
+    const moveThresholdPx = isTouch ? 6 : 2;
+
     let hasMoved = false;
 
     state.activeInteraction = {
@@ -1298,7 +1323,10 @@ function attachResizeHandle(handleEl, dir, objId, pageIndex) {
       const dxPx = moveEvent.clientX - startMouseX;
       const dyPx = moveEvent.clientY - startMouseY;
 
-      if (!hasMoved && (Math.abs(dxPx) > 2 || Math.abs(dyPx) > 2)) {
+      if (!hasMoved) {
+        if (Math.abs(dxPx) < moveThresholdPx && Math.abs(dyPx) < moveThresholdPx) {
+          return;
+        }
         hasMoved = true;
         pushUndo();
       }
@@ -1395,6 +1423,11 @@ function attachRotateHandle(handleEl, objId, pageIndex) {
     const centerY = rect.top + rect.height / 2;
     const startRot = edit.rotation || 0;
 
+    const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
+    const moveThresholdPx = isTouch ? 6 : 2;
+    const startMouseX = e.clientX;
+    const startMouseY = e.clientY;
+
     let hasMoved = false;
 
     state.activeInteraction = {
@@ -1409,13 +1442,18 @@ function attachRotateHandle(handleEl, objId, pageIndex) {
     };
 
     function onPointerMove(moveEvent) {
+      const mouseX = moveEvent.clientX;
+      const mouseY = moveEvent.clientY;
+      const dxPx = mouseX - startMouseX;
+      const dyPx = mouseY - startMouseY;
+
       if (!hasMoved) {
+        if (Math.abs(dxPx) < moveThresholdPx && Math.abs(dyPx) < moveThresholdPx) {
+          return;
+        }
         hasMoved = true;
         pushUndo();
       }
-
-      const mouseX = moveEvent.clientX;
-      const mouseY = moveEvent.clientY;
       const rad = Math.atan2(mouseY - centerY, mouseX - centerX);
       let deg = Math.round((rad * 180) / Math.PI) + 90;
 
@@ -2242,13 +2280,18 @@ window.addEventListener('keydown', (e) => {
     Boolean(activeEl.closest('.modal-backdrop'))
   );
 
-  // Esc: 若正在拖曳/縮放/旋轉則取消操作還原；否則取消選取
+  // Esc: 若正在拖曳/縮放/旋轉則取消操作還原；若處於全螢幕則退出全螢幕；否則取消選取
   if (e.key === 'Escape') {
     if (state.activeInteraction && typeof state.activeInteraction.cancel === 'function') {
       e.preventDefault();
       state.activeInteraction.cancel();
       state.activeInteraction = null;
       toast('已取消本次調整', '');
+      return;
+    }
+    if (document.fullscreenElement || $pageDetail.classList.contains('is-fullscreen')) {
+      e.preventDefault();
+      toggleFullscreen(false);
       return;
     }
     if ((state.selectedObjIds.length > 0 || state.selectedObjId) && !isTyping) {
@@ -2319,14 +2362,15 @@ window.addEventListener('keydown', (e) => {
 
 // ── Layers Sidebar List ───────────────────────────────────────────────────────
 function renderSidebarList(pageIndex) {
-  $layersSidebar.innerHTML = '<p class="layer-label">圖層列表</p>';
+  const container = $layersCollapsibleWrap || $layersSidebar;
+  container.innerHTML = '';
   const activeItems = getActivePageEdits(pageIndex);
 
   if (activeItems.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'text-sm text-hint';
     empty.textContent = '此頁沒有文字圖層';
-    $layersSidebar.appendChild(empty);
+    container.appendChild(empty);
     return;
   }
 
@@ -2362,7 +2406,7 @@ function renderSidebarList(pageIndex) {
       selectObject(edit.id);
     });
 
-    $layersSidebar.appendChild(card);
+    container.appendChild(card);
   });
 }
 
@@ -2602,6 +2646,111 @@ async function autoRestoreLastJob() {
       console.warn('Auto restore job failed:', e);
     }
   }
+}
+
+// ── Fullscreen & Floating Window Minimization ─────────────────────────────────
+function toggleFullscreen(forceState) {
+  const isCurrentlyFull = $pageDetail.classList.contains('is-fullscreen') || Boolean(document.fullscreenElement);
+  const next = typeof forceState === 'boolean' ? forceState : !isCurrentlyFull;
+
+  if (next) {
+    $pageDetail.classList.add('is-fullscreen');
+    if ($labelFullscreen) $labelFullscreen.textContent = '離開全螢幕';
+    if ($iconFullscreenEnter) $iconFullscreenEnter.classList.add('hidden');
+    if ($iconFullscreenExit) $iconFullscreenExit.classList.remove('hidden');
+
+    // 嘗試調用瀏覽器原生的 Fullscreen API（若被阻止則使用 CSS 全視窗模擬，完全不中斷體驗）
+    if (!document.fullscreenElement && $pageDetail.requestFullscreen) {
+      $pageDetail.requestFullscreen().catch(() => {
+        // 瀏覽器政策或非安全環境時靜默降級使用 CSS 全螢幕，不影響操作
+      });
+    }
+    toast('已進入全螢幕編輯模式 (按 Esc 退出)', '');
+  } else {
+    $pageDetail.classList.remove('is-fullscreen');
+    if ($labelFullscreen) $labelFullscreen.textContent = '全螢幕';
+    if ($iconFullscreenEnter) $iconFullscreenEnter.classList.remove('hidden');
+    if ($iconFullscreenExit) $iconFullscreenExit.classList.add('hidden');
+
+    if (document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    }
+  }
+
+  // 畫面縮放重新適配
+  setTimeout(() => {
+    if (state.selectedPageIndex !== null) {
+      const natW = state.canvasNaturalSize.width || 1920;
+      const natH = state.canvasNaturalSize.height || 1080;
+      const edits = getActivePageEdits(state.selectedPageIndex);
+      edits.forEach((ed) => {
+        const dom = document.getElementById(`canvas-item-${ed.id}`);
+        if (dom) {
+          updateCanvasItemStyle(dom, ed, natW, natH);
+          renderItemContent(dom, ed, state.selectedPageIndex);
+        }
+      });
+    }
+  }, 100);
+}
+
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && $pageDetail.classList.contains('is-fullscreen')) {
+    toggleFullscreen(false);
+  }
+});
+
+if ($btnFullscreen) {
+  $btnFullscreen.addEventListener('click', () => toggleFullscreen());
+}
+
+if ($btnTogglePanels) {
+  $btnTogglePanels.addEventListener('click', () => {
+    const isCollapsed = $pageDetail.classList.toggle('sidebar-collapsed');
+    if ($labelTogglePanels) {
+      $labelTogglePanels.textContent = isCollapsed ? '顯示面板' : '面板';
+    }
+    $btnTogglePanels.classList.toggle('active', isCollapsed);
+    toast(isCollapsed ? '已折疊側邊面板，畫布空間最大化' : '已展開側邊面板', '');
+  });
+}
+
+function toggleMinimizeInspector(force) {
+  if (!$inspectorPanel) return;
+  const isMin = $inspectorPanel.classList.toggle('is-minimized', force);
+  if ($btnMinimizeInspector) {
+    $btnMinimizeInspector.setAttribute('aria-expanded', !isMin ? 'true' : 'false');
+    $btnMinimizeInspector.title = isMin ? '展開屬性面板' : '最小化屬性面板';
+    $btnMinimizeInspector.innerHTML = isMin
+      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+  }
+}
+
+function toggleMinimizeLayers(force) {
+  if (!$layersSidebar) return;
+  const isMin = $layersSidebar.classList.toggle('is-minimized', force);
+  if ($btnMinimizeLayers) {
+    $btnMinimizeLayers.setAttribute('aria-expanded', !isMin ? 'true' : 'false');
+    $btnMinimizeLayers.title = isMin ? '展開圖層列表' : '最小化圖層列表';
+    $btnMinimizeLayers.innerHTML = isMin
+      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+  }
+}
+
+if ($btnMinimizeInspector) {
+  $btnMinimizeInspector.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMinimizeInspector();
+  });
+}
+
+if ($btnMinimizeLayers) {
+  $btnMinimizeLayers.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMinimizeLayers();
+  });
 }
 
 window.addEventListener('beforeunload', (e) => {
