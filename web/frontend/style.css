@@ -39,7 +39,13 @@
   --transition: 160ms ease;
 }
 
-html { font-size: 15px; -webkit-font-smoothing: antialiased; }
+html {
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+  overscroll-behavior-y: none;
+  overscroll-behavior-x: none;
+}
 body {
   /* 全站中英文：英數 Times 優先命中，中文落到 LXGW WenKai 霞鶩文楷 */
   font-family: var(--font-data);
@@ -51,6 +57,9 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  overscroll-behavior: none;
+  overscroll-behavior-y: none;
+  overscroll-behavior-x: none;
 }
 
 /* 介面、按鈕與表單控制元件明確繼承全域（中文 WenKai、英數 Times） */

@@ -2222,6 +2222,17 @@ $btnRedo.addEventListener('click', redo);
 
 // ── Global Keyboard Shortcuts (Escape 取消拖曳 / 縮放 / 旋轉 / 選取) ────────
 window.addEventListener('keydown', (e) => {
+  const isCtrl = e.ctrlKey || e.metaKey;
+
+  // 阻擋任務執行中的快捷鍵重新整理 (F5 / Cmd+R / Ctrl+R)
+  if (state.isBusy || state.status === 'processing') {
+    if (e.key === 'F5' || (isCtrl && (e.code === 'KeyR' || e.key === 'r' || e.key === 'R'))) {
+      e.preventDefault();
+      toast('任務正在執行中，請勿重新整理頁面', 'error');
+      return;
+    }
+  }
+
   const activeEl = document.activeElement;
   const isTyping = activeEl && (
     activeEl.tagName === 'INPUT' ||
@@ -2230,7 +2241,6 @@ window.addEventListener('keydown', (e) => {
     activeEl.isContentEditable ||
     Boolean(activeEl.closest('.modal-backdrop'))
   );
-  const isCtrl = e.ctrlKey || e.metaKey;
 
   // Esc: 若正在拖曳/縮放/旋轉則取消操作還原；否則取消選取
   if (e.key === 'Escape') {
@@ -2595,9 +2605,10 @@ async function autoRestoreLastJob() {
 }
 
 window.addEventListener('beforeunload', (e) => {
-  if (state.isDirty) {
+  if (state.isBusy || state.status === 'processing' || state.isDirty) {
     e.preventDefault();
     e.returnValue = '';
+    return '';
   }
 });
 
