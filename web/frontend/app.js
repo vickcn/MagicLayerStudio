@@ -2797,7 +2797,8 @@ if ($btnMinimizeLayers) {
 }
 
 window.addEventListener('beforeunload', (e) => {
-  if (state.isBusy || state.status === 'processing' || state.isDirty) {
+  // 僅在圖層分離/上傳任務進行中時阻擋重新整理，一般檢視或編輯狀態開放重新整理
+  if (state.status === 'uploading' || state.status === 'processing') {
     e.preventDefault();
     e.returnValue = '';
     return '';
