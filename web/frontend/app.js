@@ -738,12 +738,19 @@ function initPageEdits(pIdx) {
   if (!page) return;
 
   const pageEdits = state.customEdits[pStr];
+  const natH = page.height || state.canvasNaturalSize.height || 1080;
   (page.layers || []).forEach((layer) => {
     const lid = layer.id;
     if (!pageEdits[lid]) {
       const style = layer.style_hint || {};
       const rgb = style.dominant_color_rgb || [255, 255, 255];
       const hex = rgbToHex(rgb[0], rgb[1], rgb[2]);
+      const estimatedPt = style.estimated_font_size_pt || Math.max(8, Math.round(((layer.height || 40) / natH) * 540 * 0.72)) || 24;
+      const strokeRgb = style.stroke_color_rgb;
+      const outlineObj = (Array.isArray(strokeRgb) && strokeRgb.length === 3)
+        ? { enabled: true, color: rgbToHex(strokeRgb[0], strokeRgb[1], strokeRgb[2]), width: 2 }
+        : { enabled: false, color: '#7A2E00', width: 2 };
+
       pageEdits[lid] = {
         id: lid,
         mode: 'image_layer',
@@ -755,12 +762,13 @@ function initPageEdits(pIdx) {
         deleted: false,
         style: {
           font_name: style.font_name_hint || 'Noto Sans TC',
-          font_size_pt: Math.round(style.estimated_font_size_pt || 24),
+          font_size_pt: Math.round(estimatedPt),
           bold: Boolean(style.likely_bold),
           italic: false,
           align: 'center',
           color_rgb: rgb,
           color_hex: hex,
+          outline: outlineObj,
         }
       };
     }
@@ -980,9 +988,13 @@ function renderItemContent(itemEl, edit, pageIndex) {
     wordart.style.fontStyle = s.italic ? 'italic' : 'normal';
     wordart.style.textAlign = s.align || 'center';
 
-    const stageH = $canvasStage.clientHeight || 480;
-    const scaleRatio = stageH / (state.canvasNaturalSize.height || 1080);
-    const scaledPx = Math.max(10, Math.round(((s.font_size_pt || 24) * 1.333) * scaleRatio));
+    const stageRect = $canvasStage ? $canvasStage.getBoundingClientRect() : null;
+    const stageH = (stageRect && stageRect.height) || $canvasStage.clientHeight || 480;
+    // PPT 標準 16:9 投影片高度為 540 pt（7.5 英吋 * 72 pt/in）
+    // 畫布上 1 pt 所對應的螢幕 CSS 像素 = stageH / 540
+    const ptToPxRatio = stageH / 540;
+    const fontSizePt = s.font_size_pt || 24;
+    const scaledPx = Math.max(8, Math.round(fontSizePt * ptToPxRatio));
     wordart.style.fontSize = `${scaledPx}px`;
 
     // 1. 填色處理 (單色 vs 漸層)
@@ -1003,7 +1015,7 @@ function renderItemContent(itemEl, edit, pageIndex) {
     // 2. 文字外框 (Outline)
     const outline = s.outline || {};
     if (outline.enabled && outline.width > 0) {
-      const strokeScaled = Math.max(1, Math.round((outline.width || 2) * scaleRatio * 1.2));
+      const strokeScaled = Math.max(1, Math.round((outline.width || 2) * ptToPxRatio));
       wordart.style.webkitTextStroke = `${strokeScaled}px ${outline.color || '#7A2E00'}`;
       wordart.style.paintOrder = 'stroke fill';
     } else {
@@ -1017,9 +1029,9 @@ function renderItemContent(itemEl, edit, pageIndex) {
       const shOpacity = shadow.opacity !== undefined ? shadow.opacity : 0.35;
       const shRgb = hexToRgb(shColor) || [0, 0, 0];
       const shRgba = `rgba(${shRgb[0]}, ${shRgb[1]}, ${shRgb[2]}, ${shOpacity})`;
-      const sx = Math.round((shadow.offset_x || 4) * scaleRatio);
-      const sy = Math.round((shadow.offset_y || 4) * scaleRatio);
-      const sblur = Math.round((shadow.blur || 8) * scaleRatio);
+      const sx = Math.round((shadow.offset_x || 4) * ptToPxRatio);
+      const sy = Math.round((shadow.offset_y || 4) * ptToPxRatio);
+      const sblur = Math.round((shadow.blur || 8) * ptToPxRatio);
       wordart.style.textShadow = `${sx}px ${sy}px ${sblur}px ${shRgba}`;
     } else {
       wordart.style.textShadow = 'none';
@@ -1669,6 +1681,17 @@ function setMode(mode) {
 
   pushUndo();
   edit.mode = mode;
+
+  // 切換至文字藝術師時，若尚未有合適字級，自動依據圖層方框高度推算適配字級
+  if (mode === 'wordart') {
+    const natH = state.canvasNaturalSize.height || 1080;
+    if (!edit.style || !edit.style.font_size_pt || edit.style.font_size_pt < 6) {
+      if (!edit.style) edit.style = {};
+      edit.style.font_size_pt = Math.max(8, Math.round(((edit.height || 40) / natH) * 540 * 0.72));
+    }
+    if ($propFontSize) $propFontSize.value = edit.style.font_size_pt;
+  }
+
   $modeImageBtn.classList.toggle('active', mode === 'image_layer');
   $modeWordartBtn.classList.toggle('active', mode === 'wordart');
 
@@ -2802,6 +2825,18 @@ window.addEventListener('beforeunload', (e) => {
     e.preventDefault();
     e.returnValue = '';
     return '';
+  }
+});
+
+window.addEventListener('resize', () => {
+  if (state.selectedView === 'editor') {
+    const activeEdits = getActivePageEdits(state.selectedPageIndex);
+    activeEdits.forEach((edit) => {
+      if (edit.mode === 'wordart') {
+        const el = document.getElementById(`canvas-item-${edit.id}`);
+        if (el) renderItemContent(el, edit, state.selectedPageIndex);
+      }
+    });
   }
 });
 
