@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=LXGW+WenKai+TC&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260912_v4">
+  <link rel="stylesheet" href="style.css?v=20260917_v4">
 </head>
 <body>
 
@@ -234,6 +234,22 @@
           </svg>
           重新處理
         </button>
+        <button class="btn btn-outline" id="btn-export-raw-images" title="把各頁的背景圖與原始去背文字圖層打包成 zip（不含畫布上的樣式調整）">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <polyline points="21 15 16 10 5 21"/>
+          </svg>
+          匯出圖片（素材）
+        </button>
+        <button class="btn btn-outline" id="btn-export-composited-images" title="依目前的圖層與樣式設定，把每頁最終畫面轉成圖片並打包成 zip">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <polyline points="21 15 16 10 5 21"/>
+          </svg>
+          匯出圖片（合成畫面）
+        </button>
         <button class="btn btn-accent" id="btn-download">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -328,7 +344,7 @@
             <div class="canvas-overlay" id="canvas-overlay"></div>
           </div>
           <!-- 快捷鍵小提示 -->
-          <div class="canvas-hints">
+          <div class="canvas-hints" id="canvas-hints" title="可拖曳移動（手機長按後拖曳）">
             <span class="hint-item"><span class="kbd">Ctrl+Z / Y</span> 復原重做</span>
             <span class="hint-item"><span class="kbd">Ctrl+C / V</span> 複製貼上</span>
             <span class="hint-item"><span class="kbd">Del</span> 刪除</span>
@@ -341,8 +357,18 @@
         </div>
 
         <!-- 側邊欄：圖層清單 + 屬性編輯器 -->
-        <div class="detail-sidebar">
-          
+        <div class="detail-sidebar" id="detail-sidebar">
+          <!-- 拖曳把手（僅全螢幕模式顯示）：滑鼠可直接拖曳，觸控需長按後拖曳 -->
+          <div class="drawer-handle" id="drawer-handle" title="拖曳移動面板">
+            <span class="drawer-handle-grip" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="6" r="1.3"/><circle cx="15" cy="6" r="1.3"/><circle cx="9" cy="12" r="1.3"/><circle cx="15" cy="12" r="1.3"/><circle cx="9" cy="18" r="1.3"/><circle cx="15" cy="18" r="1.3"/></svg>
+            </span>
+            <span class="drawer-handle-label">工具面板</span>
+            <button type="button" class="btn-panel-minimize" id="btn-collapse-drawer" title="最小化/展開整個工具面板" aria-label="最小化整個工具面板">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+            </button>
+          </div>
+
           <!-- 屬性編輯面板 -->
           <div class="inspector-panel" id="inspector-panel">
             <div class="inspector-header">
@@ -679,6 +705,6 @@
 <!-- Toast 容器 -->
 <div id="toast-container"></div>
 
-<script src="app.js?v=20260913_v1"></script>
+<script src="app.js?v=20260917_v4"></script>
 </body>
 </html>

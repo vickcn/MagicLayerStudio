@@ -9,9 +9,11 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 import threading
 import time
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qsl, urlencode
@@ -511,6 +513,10 @@ def job_status(job_id: str):
         "filename": job.get("filename"),
         "params": job.get("params"),
         "size_mb": job.get("size_mb"),
+        "rebuild_status": job.get("rebuild_status"),
+        "rebuild_error": job.get("rebuild_error"),
+        "image_export_status": job.get("image_export_status"),
+        "image_export_error": job.get("image_export_error"),
     }
 
 
@@ -843,6 +849,151 @@ def download_pptx(job_id: str, custom: bool = False):
         filename=filename,
     )
 
+
+# ── Image collection export (zip) ──────────────────────────────────────────
+def _zip_files(entries: Dict[str, Path], zip_path: Path):
+    """把 {arcname: 實體檔案路徑} 打包成一個 zip 檔。"""
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for arcname, file_path in entries.items():
+            if file_path.exists():
+                zf.write(file_path, arcname)
+
+
+@app.get("/api/jobs/{job_id}/export/raw_images")
+def export_raw_images(job_id: str):
+    """把每頁的背景圖與原始去背文字圖層打包成 zip（不含使用者於畫布上的樣式調整）。"""
+    if BACKEND.name == "core_api":
+        raise HTTPException(409, "遠端工作尚不支援匯出原始素材圖片")
+    job = _get_job(job_id)
+    if not job or job.get("status") != "done":
+        raise HTTPException(404, "資料尚未就緒")
+
+    pages = job.get("pages", [])
+    if not pages:
+        raise HTTPException(404, "沒有可匯出的頁面")
+
+    def _resolve(rel: str) -> Path:
+        p = Path(rel)
+        return p if p.is_absolute() else (JOBS_DIR / job_id / p)
+
+    entries: Dict[str, Path] = {}
+    for idx, page in enumerate(pages):
+        page_no = idx + 1
+        bg = page.get("background")
+        if bg:
+            bg_path = _resolve(bg)
+            entries[f"page_{page_no:03d}/background{bg_path.suffix or '.png'}"] = bg_path
+        src = page.get("source_image")
+        if src:
+            src_path = _resolve(src)
+            entries[f"page_{page_no:03d}/source{src_path.suffix or '.png'}"] = src_path
+        for layer_idx, layer in enumerate(page.get("layer_files") or []):
+            layer_path = _resolve(layer)
+            entries[f"page_{page_no:03d}/layer_{layer_idx:02d}{layer_path.suffix or '.png'}"] = layer_path
+
+    if not entries:
+        raise HTTPException(404, "找不到任何圖片檔案")
+
+    zip_path = JOBS_DIR / job_id / "output" / "raw_images.zip"
+    _zip_files(entries, zip_path)
+
+    filename = Path(job["filename"]).stem + "_raw_images.zip"
+    return FileResponse(str(zip_path), media_type="application/zip", filename=filename)
+
+
+@app.post("/api/jobs/{job_id}/export/composited_images")
+def export_composited_images(job_id: str, background_tasks: BackgroundTasks, custom: bool = True):
+    """依目前的圖層設定，重組 PPTX 後將每頁畫面轉成圖片並打包成 zip。"""
+    if BACKEND.name == "core_api":
+        raise HTTPException(409, "遠端工作尚不支援匯出合成畫面圖片")
+    job = _get_job(job_id)
+    if not job:
+        raise HTTPException(404, "找不到此工作")
+    if job.get("status") != "done":
+        raise HTTPException(425, "工作尚未完成")
+
+    output_dir = Path(job["output_dir"])
+    document_json = output_dir.parent / "output" / "document.json"
+    if not document_json.exists():
+        candidates = list((JOBS_DIR / job_id).rglob("document.json"))
+        if not candidates:
+            raise HTTPException(404, "找不到 document.json，無法匯出")
+        document_json = candidates[0]
+
+    custom_edits_file = JOBS_DIR / job_id / "custom_edits.json"
+    custom_edits_data = custom_edits_file if (custom and custom_edits_file.exists()) else None
+
+    export_dir = JOBS_DIR / job_id / "output"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    temp_pptx = export_dir / "_export_composited.pptx"
+    render_dir = export_dir / "_composited_render"
+    zip_path = export_dir / "composited_images.zip"
+
+    def _do_export():
+        try:
+            _set_job(job_id, image_export_status="running", image_export_error=None)
+            from src.pptx_rebuilder import rebuild_pptx_from_document
+            rebuild_pptx_from_document(
+                document_json_path=document_json,
+                output_pptx_path=temp_pptx,
+                rebuild_mode="image_layer",
+                custom_edits=custom_edits_data,
+            )
+
+            if render_dir.exists():
+                shutil.rmtree(render_dir, ignore_errors=True)
+            render_dir.mkdir(parents=True, exist_ok=True)
+
+            soffice = shutil.which("soffice") or shutil.which("libreoffice")
+            if soffice is None:
+                raise RuntimeError("找不到 LibreOffice (soffice)，無法將簡報轉為圖片")
+            subprocess.run(
+                [soffice, "--headless", "--convert-to", "pdf", str(temp_pptx), "--outdir", str(render_dir)],
+                check=True,
+                capture_output=True,
+            )
+            pdf_path = render_dir / (temp_pptx.stem + ".pdf")
+            if not pdf_path.exists():
+                raise RuntimeError("LibreOffice 未產生預期的 PDF 檔")
+
+            try:
+                import pymupdf as fitz
+            except ImportError:
+                import fitz  # type: ignore
+
+            entries: Dict[str, Path] = {}
+            doc = fitz.open(str(pdf_path))
+            try:
+                for idx, page in enumerate(doc):
+                    png_path = render_dir / f"slide_{idx + 1:03d}.png"
+                    pix = page.get_pixmap(dpi=150, alpha=False)
+                    pix.save(str(png_path))
+                    entries[f"slide_{idx + 1:03d}.png"] = png_path
+            finally:
+                doc.close()
+
+            _zip_files(entries, zip_path)
+            _set_job(job_id, image_export_status="done", image_export_zip=str(zip_path))
+        except Exception as e:
+            _set_job(job_id, image_export_status="error", image_export_error=str(e))
+
+    background_tasks.add_task(_do_export)
+    return {"job_id": job_id, "status": "exporting"}
+
+
+@app.get("/api/jobs/{job_id}/download_images")
+def download_composited_images(job_id: str):
+    job = _get_job(job_id)
+    if not job:
+        raise HTTPException(404, "找不到此工作")
+    if job.get("image_export_status") != "done" or not job.get("image_export_zip"):
+        raise HTTPException(404, "圖片尚未匯出完成")
+    zip_path = Path(job["image_export_zip"])
+    if not zip_path.exists():
+        raise HTTPException(404, "找不到匯出的圖片壓縮檔")
+    filename = Path(job["filename"]).stem + "_slides.zip"
+    return FileResponse(str(zip_path), media_type="application/zip", filename=filename)
 
 
 # ── Google OAuth 2.0 Auth Module (Synced from audioStudio) ───────────────────

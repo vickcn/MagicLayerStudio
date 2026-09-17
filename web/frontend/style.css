@@ -1312,33 +1312,51 @@ select { padding: 4px 8px; }
   bottom: 8px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(30,30,32,0.82);
+  max-width: calc(100% - 24px);
+  background: rgba(30,30,32,0.72);
   backdrop-filter: blur(6px);
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 999px;
-  padding: 4px 14px;
+  padding: 3px 10px;
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 12px;
-  pointer-events: none;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* 可拖曳移動，避免擋住主畫面 */
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  opacity: .7;
+  transition: opacity var(--transition);
   z-index: 15;
 }
+.canvas-hints::-webkit-scrollbar { display: none; }
+.canvas-hints:hover { opacity: 1; }
+.canvas-hints.is-dragging { cursor: grabbing; opacity: 1; }
 .hint-item {
-  font-size: .68rem;
+  font-size: .62rem;
   color: #ccc;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
+  /* 不可被壓縮，否則中文會被擠成一字一行的直排 */
+  flex: 0 0 auto;
+  white-space: nowrap;
+  writing-mode: horizontal-tb;
 }
 .kbd {
   background: rgba(255,255,255,0.15);
   border: 1px solid rgba(255,255,255,0.25);
   border-radius: 3px;
-  padding: 1px 4px;
-  font-size: .64rem;
+  padding: 1px 3px;
+  font-size: .58rem;
   font-family: var(--mono);
   color: #fff;
   line-height: 1;
+  white-space: nowrap;
 }
 
 /* ── Layers Sidebar List ── */
@@ -1662,6 +1680,7 @@ select { padding: 4px 8px; }
   z-index: 1200 !important;
   width: 100vw !important;
   height: 100vh !important;
+  height: 100dvh !important; /* 手機轉向／網址列收合時仍貼合實際可視高度 */
   max-width: none !important;
   max-height: none !important;
   border-radius: 0 !important;
@@ -1709,8 +1728,12 @@ select { padding: 4px 8px; }
 .page-detail.is-fullscreen .page-detail-body {
   flex: 1;
   min-height: 0;
-  height: calc(100vh - 60px);
+  /* 用 dvh 讓手機轉向／網址列收合時高度跟著正確變化 */
+  height: calc(100dvh - 60px);
   position: relative;
+  /* 側邊面板在全螢幕下是浮動 overlay（position:absolute），
+     畫布不需要再保留 340px 的欄位，否則主畫面會被白白切掉一塊 */
+  grid-template-columns: 1fr !important;
 }
 .page-detail.is-fullscreen .canvas-container {
   min-height: 0 !important;
@@ -1719,10 +1742,10 @@ select { padding: 4px 8px; }
   padding: 24px !important;
 }
 .page-detail.is-fullscreen .canvas-stage {
-  max-height: calc(100vh - 120px) !important;
+  max-height: calc(100dvh - 120px) !important;
 }
 .page-detail.is-fullscreen .canvas-stage img#main-img {
-  max-height: calc(100vh - 120px) !important;
+  max-height: calc(100dvh - 120px) !important;
 }
 
 /* 全螢幕模式下的側邊面板變成浮動抽屜（可縮小） */
@@ -1788,6 +1811,80 @@ select { padding: 4px 8px; }
 }
 .layers-sidebar.is-minimized .layers-collapsible-wrap {
   display: none !important;
+}
+
+/* ── 全螢幕浮動工具面板：拖曳把手與整體最小化 ── */
+.drawer-handle {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: grab;
+  background: rgba(0, 0, 0, 0.04);
+  border-bottom: 1px solid var(--border-subtle);
+  touch-action: none;
+  user-select: none;
+  flex-shrink: 0;
+}
+.drawer-handle-grip { display: inline-flex; color: var(--text-hint); }
+.drawer-handle-label {
+  font-size: .74rem;
+  font-weight: 600;
+  color: var(--text-sub);
+  flex: 1;
+}
+.drawer-handle #btn-collapse-drawer svg { transition: transform var(--transition); }
+
+/* 把手僅在全螢幕模式下顯示（一般版面不需要拖曳/整體收合） */
+.page-detail.is-fullscreen .drawer-handle {
+  display: flex;
+}
+
+.detail-sidebar.is-dragging {
+  transition: none !important;
+  opacity: 0.94;
+  cursor: grabbing;
+}
+.detail-sidebar.is-dragging .drawer-handle { cursor: grabbing; }
+
+/* 整個工具面板收合：縮成一顆小圓鈕，右側空間完全讓出給主畫面 */
+.page-detail.is-fullscreen .detail-sidebar.is-collapsed {
+  width: auto !important;
+  min-width: 0 !important;
+  height: auto !important;
+  bottom: auto !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.detail-sidebar.is-collapsed .inspector-panel,
+.detail-sidebar.is-collapsed .layers-sidebar,
+.detail-sidebar.is-collapsed .drawer-handle-grip,
+.detail-sidebar.is-collapsed .drawer-handle-label {
+  display: none !important;
+}
+.detail-sidebar.is-collapsed .drawer-handle {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(30, 30, 32, 0.82);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32);
+}
+.detail-sidebar.is-collapsed #btn-collapse-drawer {
+  color: #fff;
+  padding: 0;
+}
+.detail-sidebar.is-collapsed #btn-collapse-drawer:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.detail-sidebar.is-collapsed #btn-collapse-drawer svg {
+  transform: rotate(180deg);
 }
 
 /* ── Utility ── */

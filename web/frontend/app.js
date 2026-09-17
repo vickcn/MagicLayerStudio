@@ -84,9 +84,16 @@ const $layersSidebar   = $('layers-sidebar');
 const $btnMinimizeLayers = $('btn-minimize-layers');
 const $layersCollapsibleWrap = $('layers-collapsible-wrap');
 
+const $detailSidebar   = $('detail-sidebar');
+const $drawerHandle    = $('drawer-handle');
+const $btnCollapseDrawer = $('btn-collapse-drawer');
+const $canvasHints     = $('canvas-hints');
+
 const $actionBar       = $('action-bar');
 const $actionInfo      = $('action-info');
 const $btnDownload     = $('btn-download');
+const $btnExportRawImages        = $('btn-export-raw-images');
+const $btnExportCompositedImages = $('btn-export-composited-images');
 const $btnReprocess    = $('btn-reprocess');
 const $btnDeleteJob    = $('btn-delete-job');
 const $paramsToggle    = $('params-toggle');
@@ -232,6 +239,8 @@ function syncDisabledControls() {
   $btnCancelProcess.disabled = !canCancel || state.isCancelling;
   $btnReprocess.disabled = busy || !state.file;
   $btnDownload.disabled = busy || !state.jobId;
+  $btnExportRawImages.disabled = busy || !state.jobId;
+  $btnExportCompositedImages.disabled = busy || !state.jobId;
   $btnDeleteJob.disabled = busy || !state.jobId;
 }
 
@@ -2565,6 +2574,74 @@ async function _waitForRebuild(maxWait = 60000) {
   setBusy(false);
 }
 
+$btnExportRawImages.addEventListener('click', async () => {
+  if (!state.jobId || state.isBusy) return;
+  setBusy(true, '正在打包原始素材圖片', '正在收集各頁背景圖與去背文字圖層。');
+  try {
+    const a = document.createElement('a');
+    a.href = `${API}/api/jobs/${state.jobId}/export/raw_images`;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast('原始素材圖片下載完成！', 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    setBusy(false);
+  }
+});
+
+$btnExportCompositedImages.addEventListener('click', async () => {
+  if (!state.jobId || state.isBusy) return;
+
+  if (state.isDirty) {
+    await saveCustomEdits();
+    if (state.isDirty) return;
+  }
+
+  toast('正在依照您的設定產生每頁圖片…', '');
+  setBusy(true, '正在匯出圖片', '系統會依照目前圖層設定產生每頁畫面的 PNG 並打包成 zip。');
+  try {
+    const r = await fetch(`${API}/api/jobs/${state.jobId}/export/composited_images`, { method: 'POST' });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ detail: '匯出失敗' }));
+      throw new Error(err.detail);
+    }
+    await _waitForImageExport();
+  } catch (e) {
+    toast(e.message, 'error');
+    setBusy(false);
+  }
+});
+
+async function _waitForImageExport(maxWait = 120000) {
+  const start = Date.now();
+  while (Date.now() - start < maxWait) {
+    await new Promise(r => setTimeout(r, 1500));
+    const r = await fetch(`${API}/api/jobs/${state.jobId}/status`);
+    const data = await r.json();
+    if (data.image_export_status === 'done') {
+      const a = document.createElement('a');
+      a.href = `${API}/api/jobs/${state.jobId}/download_images`;
+      a.download = '';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast('圖片壓縮檔下載完成！', 'success');
+      setBusy(false);
+      return;
+    }
+    if (data.image_export_status === 'error') {
+      toast('匯出失敗：' + (data.image_export_error || ''), 'error');
+      setBusy(false);
+      return;
+    }
+  }
+  toast('匯出超時，請再試一次', 'error');
+  setBusy(false);
+}
+
 $btnDeleteJob.addEventListener('click', async () => {
   if (!state.jobId || state.isBusy) return;
   const ok = await confirmAction({
@@ -2741,23 +2818,39 @@ function toggleFullscreen(forceState) {
     if (document.fullscreenElement && document.exitFullscreen) {
       document.exitFullscreen().catch(() => {});
     }
+
+    // 離開全螢幕時重置浮動面板的收合與拖曳位置，下次進入全螢幕時回到預設右上角
+    if ($detailSidebar) {
+      $detailSidebar.classList.remove('is-collapsed', 'is-dragging');
+      $detailSidebar.style.left = '';
+      $detailSidebar.style.top = '';
+      $detailSidebar.style.right = '';
+      $detailSidebar.style.bottom = '';
+      $detailSidebar.style.width = '';
+      $detailSidebar.style.height = '';
+    }
+    if ($btnCollapseDrawer) $btnCollapseDrawer.title = '最小化整個工具面板';
   }
 
   // 畫面縮放重新適配
   setTimeout(() => {
-    if (state.selectedPageIndex !== null) {
-      const natW = state.canvasNaturalSize.width || 1920;
-      const natH = state.canvasNaturalSize.height || 1080;
-      const edits = getActivePageEdits(state.selectedPageIndex);
-      edits.forEach((ed) => {
-        const dom = document.getElementById(`canvas-item-${ed.id}`);
-        if (dom) {
-          updateCanvasItemStyle(dom, ed, natW, natH);
-          renderItemContent(dom, ed, state.selectedPageIndex);
-        }
-      });
-    }
+    clampIntoParent($canvasHints);
+    refitCanvasItems();
   }, 100);
+}
+
+// 依目前畫布實際尺寸重新計算所有文字物件的位置與樣式
+function refitCanvasItems() {
+  if (state.selectedPageIndex === null) return;
+  const natW = state.canvasNaturalSize.width || 1920;
+  const natH = state.canvasNaturalSize.height || 1080;
+  getActivePageEdits(state.selectedPageIndex).forEach((ed) => {
+    const dom = document.getElementById(`canvas-item-${ed.id}`);
+    if (dom) {
+      updateCanvasItemStyle(dom, ed, natW, natH);
+      renderItemContent(dom, ed, state.selectedPageIndex);
+    }
+  });
 }
 
 document.addEventListener('fullscreenchange', () => {
@@ -2778,6 +2871,7 @@ if ($btnTogglePanels) {
     }
     $btnTogglePanels.classList.toggle('active', isCollapsed);
     toast(isCollapsed ? '已折疊側邊面板，畫布空間最大化' : '已展開側邊面板', '');
+    setTimeout(refitCanvasItems, 100);
   });
 }
 
@@ -2819,6 +2913,172 @@ if ($btnMinimizeLayers) {
   });
 }
 
+// ── 全螢幕模式：整個浮動工具面板的收合 + 拖曳 ─────────────────────────────
+function toggleDrawerCollapse(force) {
+  if (!$detailSidebar) return;
+  const isCollapsed = $detailSidebar.classList.toggle('is-collapsed', force);
+  if ($btnCollapseDrawer) {
+    $btnCollapseDrawer.setAttribute('aria-expanded', !isCollapsed ? 'true' : 'false');
+    $btnCollapseDrawer.title = isCollapsed ? '展開整個工具面板' : '最小化整個工具面板';
+  }
+}
+
+if ($btnCollapseDrawer) {
+  $btnCollapseDrawer.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleDrawerCollapse();
+  });
+}
+
+// 讓浮動面板可拖曳：滑鼠直接拖，觸控需長按後才啟動（避免與點擊/捲動衝突）
+function makeDraggable(el, handle, options = {}) {
+  if (!el || !handle) return;
+
+  const {
+    longPressMs = 400,
+    moveCancelPx = 10,
+    canDrag = () => true,
+    ignoreSelector = null,
+    lockSize = false,
+  } = options;
+
+  let dragging = false;
+  let activePointerId = null;
+  let longPressTimer = null;
+  let startClientX = 0;
+  let startClientY = 0;
+  let startLeft = 0;
+  let startTop = 0;
+
+  function clearLongPressTimer() {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  }
+
+  // 面板是 position:absolute，定位基準是最近的 positioned ancestor 而非 viewport，
+  // 且可能帶有置中用的 transform，所以用「元素與基準容器的矩形差」換算真實 left/top，
+  // 否則開始拖曳的瞬間面板會跳位。
+  function measure() {
+    const parent = el.offsetParent || document.body;
+    const parentRect = parent.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    return {
+      parent,
+      left: elRect.left - parentRect.left - parent.clientLeft,
+      top: elRect.top - parentRect.top - parent.clientTop,
+      width: elRect.width,
+      height: elRect.height,
+    };
+  }
+
+  function beginDrag(clientX, clientY) {
+    const pos = measure();
+    startLeft = pos.left;
+    startTop = pos.top;
+    startClientX = clientX;
+    startClientY = clientY;
+    // 改用 left/top 定位，脫離原本的 right/bottom 錨定與置中 transform
+    el.style.transform = 'none';
+    el.style.left = `${pos.left}px`;
+    el.style.top = `${pos.top}px`;
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
+    // 固定寬高，避免 bottom 錨定解除後 flex:1 的內容失去高度依據而塌陷
+    if (lockSize && !el.classList.contains('is-collapsed')) {
+      el.style.width = `${pos.width}px`;
+      el.style.height = `${pos.height}px`;
+    }
+    el.classList.add('is-dragging');
+    dragging = true;
+  }
+
+  function updateDrag(clientX, clientY) {
+    const parent = el.offsetParent;
+    const parentWidth = parent ? parent.clientWidth : window.innerWidth;
+    const parentHeight = parent ? parent.clientHeight : window.innerHeight;
+    const dx = clientX - startClientX;
+    const dy = clientY - startClientY;
+    const maxLeft = Math.max(8, parentWidth - el.offsetWidth - 8);
+    const maxTop = Math.max(8, parentHeight - el.offsetHeight - 8);
+    el.style.left = `${Math.min(Math.max(8, startLeft + dx), maxLeft)}px`;
+    el.style.top = `${Math.min(Math.max(8, startTop + dy), maxTop)}px`;
+  }
+
+  function endDrag() {
+    clearLongPressTimer();
+    if (dragging) {
+      dragging = false;
+      el.classList.remove('is-dragging');
+    }
+    activePointerId = null;
+  }
+
+  handle.addEventListener('pointerdown', (e) => {
+    if (!canDrag()) return;
+    if (ignoreSelector && e.target.closest(ignoreSelector)) return;
+    if (activePointerId !== null) return;
+
+    activePointerId = e.pointerId;
+    startClientX = e.clientX;
+    startClientY = e.clientY;
+
+    const start = () => {
+      clearLongPressTimer();
+      try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+      beginDrag(e.clientX, e.clientY);
+    };
+
+    if (e.pointerType === 'touch') {
+      longPressTimer = setTimeout(start, longPressMs);
+    } else {
+      start();
+    }
+  });
+
+  handle.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== activePointerId) return;
+    if (!dragging) {
+      // 長按判定期間，若移動過大則視為捲動手勢，取消待處理的拖曳
+      if (Math.hypot(e.clientX - startClientX, e.clientY - startClientY) > moveCancelPx) {
+        clearLongPressTimer();
+        activePointerId = null;
+      }
+      return;
+    }
+    updateDrag(e.clientX, e.clientY);
+  });
+
+  const stop = (e) => {
+    if (activePointerId !== null && e.pointerId !== activePointerId) return;
+    endDrag();
+  };
+  handle.addEventListener('pointerup', stop);
+  handle.addEventListener('pointercancel', stop);
+}
+
+// 工具面板：僅全螢幕模式可拖曳（一般版面是固定欄位）
+makeDraggable($detailSidebar, $drawerHandle, {
+  canDrag: () => $pageDetail.classList.contains('is-fullscreen'),
+  ignoreSelector: '#btn-collapse-drawer',
+  lockSize: true,
+});
+
+// 快捷鍵提示盤：任何模式都可拖曳到不擋畫面的位置
+makeDraggable($canvasHints, $canvasHints);
+
+// 視窗尺寸／手機轉向後，把拖曳過的浮動面板拉回可視範圍內
+function clampIntoParent(el) {
+  if (!el || !el.style.left) return; // 沒被拖曳過就維持原本的 CSS 錨定
+  const parent = el.offsetParent;
+  if (!parent) return;
+  const maxLeft = Math.max(8, parent.clientWidth - el.offsetWidth - 8);
+  const maxTop = Math.max(8, parent.clientHeight - el.offsetHeight - 8);
+  el.style.left = `${Math.min(Math.max(8, parseFloat(el.style.left) || 0), maxLeft)}px`;
+  el.style.top = `${Math.min(Math.max(8, parseFloat(el.style.top) || 0), maxTop)}px`;
+}
+
 window.addEventListener('beforeunload', (e) => {
   // 僅在圖層分離/上傳任務進行中時阻擋重新整理，一般檢視或編輯狀態開放重新整理
   if (state.status === 'uploading' || state.status === 'processing') {
@@ -2828,17 +3088,27 @@ window.addEventListener('beforeunload', (e) => {
   }
 });
 
-window.addEventListener('resize', () => {
-  if (state.selectedView === 'editor') {
-    const activeEdits = getActivePageEdits(state.selectedPageIndex);
-    activeEdits.forEach((edit) => {
-      if (edit.mode === 'wordart') {
-        const el = document.getElementById(`canvas-item-${edit.id}`);
-        if (el) renderItemContent(el, edit, state.selectedPageIndex);
-      }
-    });
-  }
+// 視窗尺寸變化／手機轉向：重新適配畫布並把浮動面板拉回可視範圍
+function handleViewportChange() {
+  clampIntoParent($detailSidebar);
+  clampIntoParent($canvasHints);
+  refitCanvasItems();
+}
+
+window.addEventListener('resize', handleViewportChange);
+
+// 手機轉向後版面尺寸不會立刻穩定，延遲再算一次才拿得到正確寬高
+window.addEventListener('orientationchange', () => {
+  setTimeout(handleViewportChange, 250);
 });
+if (window.screen && window.screen.orientation) {
+  window.screen.orientation.addEventListener('change', () => {
+    setTimeout(handleViewportChange, 250);
+  });
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', handleViewportChange);
+}
 
 document.body.setAttribute('aria-busy', 'false');
 loadCapabilities().then(() => {
