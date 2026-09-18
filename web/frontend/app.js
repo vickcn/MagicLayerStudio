@@ -36,6 +36,9 @@ const state = {
 
   // 剪貼簿
   clipboard: null,
+
+  // 互動畫布縮放比例（1 = 100%）
+  canvasZoom: 1,
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -79,6 +82,11 @@ const $mainImg         = $('main-img');
 const $canvasGuides    = $('canvas-guides');
 const $canvasOverlay   = $('canvas-overlay');
 const $imgLoading      = $('img-loading');
+const $canvasZoomBar   = $('canvas-zoom-bar');
+const $canvasZoomLabel = $('canvas-zoom-label');
+const $btnZoomIn       = $('btn-zoom-in');
+const $btnZoomOut      = $('btn-zoom-out');
+const $btnZoomReset    = $('btn-zoom-reset');
 
 const $layersSidebar   = $('layers-sidebar');
 const $btnMinimizeLayers = $('btn-minimize-layers');
@@ -722,6 +730,7 @@ function selectPage(index) {
   state.selectedView = 'editor';
   state.selectedLayerIndex = 0;
   state.selectedObjId = null;
+  resetCanvasZoom();
 
   document.querySelectorAll('.page-card').forEach((c, i) => {
     c.classList.toggle('active', i === index);
@@ -2906,6 +2915,82 @@ function refitCanvasItems() {
     }
   });
 }
+
+// ── Canvas Zoom (滾輪 / 雙指縮放) ────────────────────────────────────────────
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 4;
+
+function setCanvasZoom(nextZoom, originClientX, originClientY, animated = false) {
+  const clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, nextZoom));
+
+  if (typeof originClientX === 'number' && typeof originClientY === 'number') {
+    const rect = $canvasStage.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      const originXPct = ((originClientX - rect.left) / rect.width) * 100;
+      const originYPct = ((originClientY - rect.top) / rect.height) * 100;
+      $canvasStage.style.transformOrigin =
+        `${Math.min(100, Math.max(0, originXPct))}% ${Math.min(100, Math.max(0, originYPct))}%`;
+    }
+  } else {
+    $canvasStage.style.transformOrigin = 'center center';
+  }
+
+  state.canvasZoom = clamped;
+  $canvasStage.classList.toggle('zoom-animated', Boolean(animated));
+  $canvasStage.style.transform = clamped === 1 ? 'none' : `scale(${clamped})`;
+  if ($canvasZoomLabel) $canvasZoomLabel.textContent = `${Math.round(clamped * 100)}%`;
+}
+
+function resetCanvasZoom() {
+  setCanvasZoom(1, undefined, undefined, true);
+}
+
+if ($canvasContainer) {
+  $canvasContainer.addEventListener('wheel', (e) => {
+    if (state.selectedPageIndex === null || !$canvasStage) return;
+    e.preventDefault();
+    // 觸控板雙指 pinch 在多數瀏覽器會轉成帶 ctrlKey 的 wheel 事件，縮放幅度需縮小避免跳動過快
+    const isPinchWheel = e.ctrlKey;
+    const factor = isPinchWheel ? 0.02 : 0.0015;
+    const delta = -e.deltaY * factor * state.canvasZoom;
+    setCanvasZoom(state.canvasZoom + delta, e.clientX, e.clientY);
+  }, { passive: false });
+
+  // ── 觸控雙指 pinch-to-zoom ──
+  let pinchStartDist = null;
+  let pinchStartZoom = 1;
+
+  function touchDist(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  }
+
+  $canvasContainer.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      pinchStartDist = touchDist(e.touches);
+      pinchStartZoom = state.canvasZoom;
+    }
+  }, { passive: true });
+
+  $canvasContainer.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 2 && pinchStartDist) {
+      e.preventDefault();
+      const dist = touchDist(e.touches);
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      setCanvasZoom(pinchStartZoom * (dist / pinchStartDist), midX, midY);
+    }
+  }, { passive: false });
+
+  const endPinch = () => { pinchStartDist = null; };
+  $canvasContainer.addEventListener('touchend', endPinch);
+  $canvasContainer.addEventListener('touchcancel', endPinch);
+}
+
+if ($btnZoomIn) $btnZoomIn.addEventListener('click', () => setCanvasZoom(state.canvasZoom + 0.25, undefined, undefined, true));
+if ($btnZoomOut) $btnZoomOut.addEventListener('click', () => setCanvasZoom(state.canvasZoom - 0.25, undefined, undefined, true));
+if ($btnZoomReset) $btnZoomReset.addEventListener('click', resetCanvasZoom);
 
 document.addEventListener('fullscreenchange', () => {
   if (!document.fullscreenElement && $pageDetail.classList.contains('is-fullscreen')) {

@@ -343,6 +343,12 @@
             <!-- 互動文字物件疊層 -->
             <div class="canvas-overlay" id="canvas-overlay"></div>
           </div>
+          <!-- 縮放控制 -->
+          <div class="canvas-zoom-bar" id="canvas-zoom-bar">
+            <button type="button" id="btn-zoom-out" title="縮小">−</button>
+            <button type="button" id="btn-zoom-reset" title="重設為 100%"><span id="canvas-zoom-label">100%</span></button>
+            <button type="button" id="btn-zoom-in" title="放大">+</button>
+          </div>
           <!-- 快捷鍵小提示 -->
           <div class="canvas-hints" id="canvas-hints" title="可拖曳移動（手機長按後拖曳）">
             <span class="hint-item"><span class="kbd">Ctrl+Z / Y</span> 復原重做</span>
@@ -353,6 +359,7 @@
             <span class="hint-item"><span class="kbd">Alt</span> 中心縮放</span>
             <span class="hint-item"><span class="kbd">Ctrl+點擊</span> 多選</span>
             <span class="hint-item"><span class="kbd">Esc</span> 放棄拖曳/取消選取</span>
+            <span class="hint-item"><span class="kbd">滾輪 / 雙指</span> 縮放畫布</span>
           </div>
         </div>
 
