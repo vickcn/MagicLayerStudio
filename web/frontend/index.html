@@ -659,9 +659,30 @@
           <div class="layers-sidebar" id="layers-sidebar">
             <div class="layers-header">
               <p class="layer-label">圖層列表</p>
-              <button type="button" class="btn-panel-minimize" id="btn-minimize-layers" title="最小化/展開圖層列表" aria-label="最小化圖層列表">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              </button>
+              <div class="layers-header-actions">
+                <div style="position:relative;">
+                  <button type="button" class="btn-panel-add" id="btn-add-layer" title="新增圖層" aria-label="新增圖層" aria-haspopup="true" aria-expanded="false">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  </button>
+                  <div class="add-layer-menu hidden" id="add-layer-menu">
+                    <button type="button" id="add-layer-image" disabled title="尚未支援：需要後端匯出流程支援任意圖片圖層">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                      圖片（尚未支援）
+                    </button>
+                    <button type="button" id="add-layer-textbox">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2" ry="2"/><line x1="7" y1="10" x2="17" y2="10"/><line x1="7" y1="14" x2="13" y2="14"/></svg>
+                      文字方塊
+                    </button>
+                    <button type="button" id="add-layer-wordart">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+                      文字藝術師
+                    </button>
+                  </div>
+                </div>
+                <button type="button" class="btn-panel-minimize" id="btn-minimize-layers" title="最小化/展開圖層列表" aria-label="最小化圖層列表">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+              </div>
             </div>
             <div class="layers-collapsible-wrap" id="layers-collapsible-wrap">
               <div class="text-sm text-hint">選擇頁面後顯示</div>

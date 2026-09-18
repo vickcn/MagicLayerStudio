@@ -1389,6 +1389,24 @@ select { padding: 4px 8px; }
   background: var(--surface);
   transition: border-color var(--transition), background var(--transition), transform var(--transition), box-shadow var(--transition);
 }
+.layer-card-delete {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  color: var(--text-hint);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+.layer-card-delete:hover {
+  background: #fde0df;
+  color: var(--error);
+}
 .layer-card-item:hover {
   border-color: var(--primary);
   background: #f7fbfa;
@@ -1714,7 +1732,7 @@ select { padding: 4px 8px; }
   border-color: var(--primary);
   color: #fff;
 }
-.page-detail.is-fullscreen .btn-ghost {
+.page-detail.is-fullscreen .btn-ghost:not(.btn-danger) {
   color: #e0dcd5;
 }
 .page-detail.is-fullscreen .btn-outline {
@@ -1793,6 +1811,68 @@ select { padding: 4px 8px; }
   align-items: center;
   justify-content: space-between;
   margin-bottom: 2px;
+}
+.layers-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.btn-panel-add {
+  background: none;
+  border: none;
+  color: var(--text-hint);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+  position: relative;
+}
+.btn-panel-add:hover {
+  background: var(--surface-tint);
+  color: var(--primary);
+}
+.add-layer-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+}
+.add-layer-menu.hidden {
+  display: none;
+}
+.add-layer-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: .8rem;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.add-layer-menu button:hover {
+  background: var(--surface-tint);
+  color: var(--primary);
+}
+.add-layer-menu button:disabled {
+  color: var(--text-hint);
+  cursor: not-allowed;
+}
+.add-layer-menu button:disabled:hover {
+  background: none;
 }
 
 /* 屬性面板最小化狀態 */

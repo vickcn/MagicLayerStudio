@@ -83,6 +83,10 @@ const $imgLoading      = $('img-loading');
 const $layersSidebar   = $('layers-sidebar');
 const $btnMinimizeLayers = $('btn-minimize-layers');
 const $layersCollapsibleWrap = $('layers-collapsible-wrap');
+const $btnAddLayer      = $('btn-add-layer');
+const $addLayerMenu     = $('add-layer-menu');
+const $addLayerTextbox  = $('add-layer-textbox');
+const $addLayerWordart  = $('add-layer-wordart');
 
 const $detailSidebar   = $('detail-sidebar');
 const $drawerHandle    = $('drawer-handle');
@@ -2050,13 +2054,37 @@ function refreshSelectedItemDOM() {
 }
 
 // ── Object Actions: Add / Copy / Paste / Delete (支援多選群組) ───────────────
-$btnAddText.addEventListener('click', addNewTextObject);
+$btnAddText.addEventListener('click', () => addNewTextObject('wordart'));
+
+function closeAddLayerMenu() {
+  $addLayerMenu.classList.add('hidden');
+  $btnAddLayer.setAttribute('aria-expanded', 'false');
+}
+$btnAddLayer.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const isHidden = $addLayerMenu.classList.contains('hidden');
+  $addLayerMenu.classList.toggle('hidden', !isHidden);
+  $btnAddLayer.setAttribute('aria-expanded', String(isHidden));
+});
+document.addEventListener('click', (e) => {
+  if (!$addLayerMenu.classList.contains('hidden') && !$addLayerMenu.contains(e.target) && e.target !== $btnAddLayer) {
+    closeAddLayerMenu();
+  }
+});
+$addLayerTextbox.addEventListener('click', () => {
+  closeAddLayerMenu();
+  addNewTextObject('image_layer');
+});
+$addLayerWordart.addEventListener('click', () => {
+  closeAddLayerMenu();
+  addNewTextObject('wordart');
+});
 $btnCopyObj.addEventListener('click', copySelectedObjects);
 $btnDeleteObj.addEventListener('click', deleteSelectedObjects);
 $btnMultiCopy.addEventListener('click', copySelectedObjects);
 $btnMultiDelete.addEventListener('click', deleteSelectedObjects);
 
-function addNewTextObject() {
+function addNewTextObject(mode = 'wordart') {
   const pIdx = state.selectedPageIndex;
   const pStr = String(pIdx);
   if (!state.customEdits[pStr]) state.customEdits[pStr] = {};
@@ -2074,7 +2102,7 @@ function addNewTextObject() {
 
   const newObj = {
     id: newId,
-    mode: 'wordart',
+    mode,
     text: '點擊編輯文字',
     x: x,
     y: y,
@@ -2101,7 +2129,7 @@ function addNewTextObject() {
   renderSidebarList(pIdx);
   selectObject(newId);
   markDirty();
-  toast('已新增文字方塊', 'success');
+  toast(mode === 'image_layer' ? '已新增文字方塊' : '已新增文字藝術師圖層', 'success');
 }
 
 function copySelectedObjects() {
@@ -2209,6 +2237,24 @@ function deleteSelectedObjects() {
   renderSidebarList(pIdx);
   markDirty();
   toast(`已刪除 ${ids.length} 個物件`, '');
+}
+
+// 從圖層列表直接刪除指定圖層，不需先選取物件
+function deleteObjectById(pIdx, id) {
+  const edit = getObjectEdit(pIdx, id);
+  if (!edit) return;
+
+  pushUndo();
+  edit.deleted = true;
+
+  if (state.selectedObjId === id || state.selectedObjIds.includes(id)) {
+    deselectObject();
+  }
+
+  renderInteractiveOverlay(pIdx);
+  renderSidebarList(pIdx);
+  markDirty();
+  toast('已刪除圖層', '');
 }
 
 function moveSelectedObjects(dx, dy) {
@@ -2437,10 +2483,18 @@ function renderSidebarList(pageIndex) {
         <div class="layer-card-text">${escapeHtml(label)}</div>
         <div class="layer-card-mode-badge">${modeText}${isCustomNew ? ' (自訂)' : ''}</div>
       </div>
+      <button type="button" class="layer-card-delete" title="刪除此圖層" aria-label="刪除此圖層">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
     `;
 
     card.addEventListener('click', () => {
       selectObject(edit.id);
+    });
+
+    card.querySelector('.layer-card-delete').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteObjectById(pageIndex, edit.id);
     });
 
     container.appendChild(card);
@@ -3087,6 +3141,16 @@ window.addEventListener('beforeunload', (e) => {
     return '';
   }
 });
+
+// 解析中時靜默攔截鍵盤重新整理（F5／Ctrl+R／Cmd+R），不彈出瀏覽器確認框，
+// 只能透過畫面上的「中止處理」按鈕停止任務。
+window.addEventListener('keydown', (e) => {
+  if (state.status !== 'uploading' && state.status !== 'processing') return;
+  const isRefreshKey = e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'));
+  if (isRefreshKey) {
+    e.preventDefault();
+  }
+}, { capture: true });
 
 // 視窗尺寸變化／手機轉向：重新適配畫布並把浮動面板拉回可視範圍
 function handleViewportChange() {
