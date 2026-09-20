@@ -10,7 +10,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=LXGW+WenKai+TC&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260917_v4">
+  <link rel="stylesheet" href="style.css?v=20260921_v3">
+  <meta name="google-client-id" content="">
 </head>
 <body>
 
@@ -79,6 +80,16 @@
         <p class="upload-hint">
           支援 <span>.pptx</span> <span>.pdf</span> <span>.png</span> <span>.jpg</span>
         </p>
+      </div>
+
+      <div class="upload-drive-actions">
+        <button type="button" class="btn-drive-picker" id="btn-drive-picker" title="從 Google Drive 選取簡報或圖片">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            <polyline points="12 11 12 17 15 14"></polyline>
+          </svg>
+          <span>從 Google Drive 選取</span>
+        </button>
       </div>
 
       <div class="upload-file-info hidden" id="file-info">
@@ -257,6 +268,16 @@
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
           匯出 PPTX
+        </button>
+        <button class="btn btn-outline" id="btn-save-permanent" title="登入後可把 PPTX 永久保存到你自己的 Google Drive；未登入的工作暫存到期後會被清除">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" id="icon-save-permanent-cloud">
+            <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+          </svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden" id="icon-save-permanent-check">
+            <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+            <polyline points="9 12 11 14 15 10"/>
+          </svg>
+          <span id="label-save-permanent">永久保存至雲端</span>
         </button>
       </div>
     </div>
@@ -733,6 +754,7 @@
 <!-- Toast 容器 -->
 <div id="toast-container"></div>
 
-<script src="app.js?v=20260917_v4"></script>
+<script src="https://apis.google.com/js/api.js" async defer></script>
+<script src="app.js?v=20260921_v4"></script>
 </body>
 </html>

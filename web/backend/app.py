@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -26,6 +27,34 @@ from fastapi.staticfiles import StaticFiles
 
 # ── Project root ─────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+logger = logging.getLogger("magiclayer_studio")
+
+
+def _load_local_env() -> None:
+    """本機開發用：直接在程式內解析 .env / .env.local，不依賴任何啟動腳本或
+    npm script 去 source 它——不管是 `npm run dev`、直接下 `uvicorn`，還是用 IDE
+    的 run/debug 設定啟動，都一定會吃到。已存在於環境變數的值優先，不覆蓋
+    （部署平台如 Vercel 注入的環境變數永遠優先於檔案）。仿照 audioStudio 的
+    `load_local_env()`。"""
+    for name in (".env", ".env.local"):
+        path = PROJECT_ROOT / name
+        if not path.is_file():
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                value = value[1:-1]
+            os.environ[key] = value
+
+
+_load_local_env()
 JOBS_DIR = Path(os.environ.get("JOBS_DIR", "/tmp/web_jobs" if os.environ.get("VERCEL") else str(PROJECT_ROOT / "tmp" / "web_jobs")))
 try:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,6 +68,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from web.backend.adapters import create_backend
 from web.backend.core_client import CoreRequestError
+from web.backend import db
 
 STUDIO_BACKEND = os.environ.get("STUDIO_BACKEND", os.environ.get("SUBMODULE_BACKEND", "local"))
 MAGICLAYER_CORE_URL = os.environ.get("MAGICLAYER_CORE_URL", "")
@@ -48,6 +78,9 @@ UPLOAD_MODE = os.environ.get(
     "STUDIO_UPLOAD_MODE",
     "gcs" if os.environ.get("VERCEL") and BACKEND.name == "core_api" else "local",
 ).strip().lower()
+
+# 部署版必須有 Neon，job 擁有權與登入 session 不能只活在記憶體/檔案暫存中
+db.require_configured_in_deployment()
 
 # ── Concurrency control ───────────────────────────────────────────────────────
 # 同時最多處理 N 個任務，避免壓垮系統（Cloud Run 可透過環境變數調整）
@@ -133,6 +166,78 @@ def _delete_job_data(job_id: str):
         shutil.rmtree(job_dir, ignore_errors=True)
     with _jobs_lock:
         _jobs.pop(job_id, None)
+    if db.is_configured():
+        try:
+            db.delete_job_ownership(job_id)
+        except Exception:
+            pass
+
+
+# ── Job ownership（匿名認領清單 + 登入使用者）──────────────────────────────
+def _current_user_id(request: Request) -> Optional[str]:
+    """回傳目前登入使用者在 Neon `users` 表的 id（未登入或未設定資料庫則回 None）。"""
+    if not db.is_configured():
+        return None
+    _, session = resolve_google_session(request)
+    if not session:
+        return None
+    return session.get("user_id")
+
+
+def _browser_job_ids(request: Request) -> list[str]:
+    raw = request.query_params.get("browser_job_ids") or ""
+    return [item.strip() for item in raw.split(",") if item.strip()][:100]
+
+
+def _record_job_ownership(job_id: str, request: Request) -> None:
+    """建立 job 時記錄擁有權（登入者為 user_id，否則為匿名，僅能靠瀏覽器認領清單存取）。"""
+    if not db.is_configured():
+        return
+    try:
+        db.create_job_ownership(job_id, _current_user_id(request))
+    except Exception:
+        pass
+
+
+def authorize_job(job_id: str, request: Request) -> None:
+    """驗證目前請求是否有權存取此 job；無權時 raise 404（不洩漏資源是否存在）。
+    未設定資料庫（本機開發）時不做任何限制，維持既有行為。"""
+    if not db.is_configured():
+        return
+    ownership = db.get_job_ownership(job_id)
+    if not ownership:
+        # 這個 job 尚未在 Neon 記錄擁有權（例如舊資料或資料庫剛啟用），不阻擋既有流程
+        return
+    owner_id = ownership.get("user_id")
+    if owner_id is None:
+        # 匿名 job：僅同一瀏覽器（認領清單內）可存取
+        if job_id in _browser_job_ids(request):
+            return
+        raise HTTPException(404, "找不到此工作")
+    user_id = _current_user_id(request)
+    if user_id and str(user_id) == str(owner_id):
+        return
+    raise HTTPException(404, "找不到此工作")
+
+
+def _permanence_fields(job_id: str) -> Dict[str, Any]:
+    """回傳 job 的永久保存狀態，供 /status 與 /result 回應合併使用。"""
+    if not db.is_configured():
+        return {"is_permanent": False, "drive_web_link": None, "permanent_save_error": None}
+    try:
+        ownership = db.get_job_ownership(job_id)
+    except Exception:
+        ownership = None
+    if not ownership:
+        return {"is_permanent": False, "drive_web_link": None, "permanent_save_error": None}
+    drive_web_link = None
+    if ownership.get("drive_pptx_file_id"):
+        drive_web_link = f"https://drive.google.com/file/d/{ownership['drive_pptx_file_id']}/view"
+    return {
+        "is_permanent": bool(ownership.get("is_permanent")),
+        "drive_web_link": drive_web_link,
+        "permanent_save_error": ownership.get("permanent_save_error"),
+    }
 
 
 def _cleanup_expired_jobs():
@@ -344,7 +449,7 @@ def health():
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(request: Request, file: UploadFile = File(...)):
     _cleanup_expired_jobs()
     suffix = Path(file.filename).suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
@@ -368,6 +473,7 @@ async def upload_file(file: UploadFile = File(...)):
         created_at=time.time(),
     )
     _persist_job_meta(job_id)
+    _record_job_ownership(job_id, request)
     return {"job_id": job_id, "filename": file.filename}
 
 
@@ -424,6 +530,7 @@ def complete_remote_upload(upload_id: str, payload: Dict[str, Any], request: Req
         created_at=time.time(),
         params=payload.get("options") or {},
     )
+    _record_job_ownership(job_id, request)
     return {"job_id": job_id, "status": "started"}
 
 
@@ -477,7 +584,8 @@ def start_processing(
 
 
 @app.get("/api/jobs/{job_id}/status")
-def job_status(job_id: str):
+def job_status(job_id: str, request: Request):
+    authorize_job(job_id, request)
     job = _get_job(job_id)
     if not job:
         # Vercel instances are ephemeral. Remote Core owns the durable record,
@@ -506,6 +614,7 @@ def job_status(job_id: str):
         status = {"queued": "pending", "running": "running", "completed": "done", "failed": "error", "cancelled": "error"}.get(remote_status, "pending")
         _set_job(job_id, status=status, progress=remote.get("progress_text") or "處理中…", error=remote.get("error"))
         job = _get_job(job_id) or job
+
     return {
         "job_id": job_id,
         "status": job.get("status"),
@@ -517,11 +626,13 @@ def job_status(job_id: str):
         "rebuild_error": job.get("rebuild_error"),
         "image_export_status": job.get("image_export_status"),
         "image_export_error": job.get("image_export_error"),
+        **_permanence_fields(job_id),
     }
 
 
 @app.post("/api/jobs/{job_id}/cancel")
-def cancel_job(job_id: str) -> Dict[str, Any]:
+def cancel_job(job_id: str, request: Request) -> Dict[str, Any]:
+    authorize_job(job_id, request)
     job = _get_job(job_id)
     if not job:
         if BACKEND.name == "core_api":
@@ -542,7 +653,8 @@ def cancel_job(job_id: str) -> Dict[str, Any]:
 
 
 @app.get("/api/jobs/{job_id}/result")
-def job_result(job_id: str):
+def job_result(job_id: str, request: Request):
+    authorize_job(job_id, request)
     job = _get_job(job_id)
     if not job:
         if BACKEND.name == "core_api":
@@ -586,12 +698,14 @@ def job_result(job_id: str):
         "rebuilt_pptx": job.get("rebuilt_pptx"),
         "custom_edits": custom_edits or {},
         "size_mb": job.get("size_mb"),
+        **_permanence_fields(job_id),
     }
 
 
 @app.delete("/api/jobs/{job_id}")
-def delete_job(job_id: str):
+def delete_job(job_id: str, request: Request):
     """刪除工作及所有暫存檔，釋放磁碟空間。"""
+    authorize_job(job_id, request)
     job = _get_job(job_id)
     if not job:
         if BACKEND.name == "core_api":
@@ -613,12 +727,22 @@ def delete_job(job_id: str):
 
 
 @app.get("/api/jobs")
-def list_jobs():
-    """列出所有已有產出的工作清單。"""
+def list_jobs(request: Request):
+    """列出目前使用者有權查看的工作清單。
+    有設定 Neon 時：已登入 → 自己的 + 同瀏覽器認領清單中尚未歸屬任何人的；
+    未登入 → 只有認領清單內的（清單空則回空陣列）。未設定 Neon（本機開發）維持原行為，全部列出。"""
     _cleanup_expired_jobs()
+    allowed_ids: Optional[set] = None
+    if db.is_configured():
+        try:
+            allowed_ids = set(db.list_job_ids_for_owner(_current_user_id(request), _browser_job_ids(request)))
+        except Exception:
+            allowed_ids = set()  # Neon 暫時不可用時，寧可少顯示也不要洩漏別人的工作
     with _jobs_lock:
         jobs_list = []
         for jid, jdata in _jobs.items():
+            if allowed_ids is not None and jid not in allowed_ids:
+                continue
             jobs_list.append({
                 "job_id": jid,
                 "filename": jdata.get("filename"),
@@ -631,7 +755,7 @@ def list_jobs():
 
 
 @app.post("/api/jobs/{job_id}/save_custom")
-async def save_custom_edits(job_id: str, edits: Dict[str, Any]):
+async def save_custom_edits(job_id: str, edits: Dict[str, Any], request: Request):
     """
     儲存使用者在前端編輯的自訂物件設定（文字、字型、大小、粗體、顏色、座標、模式）。
     edits: {
@@ -645,6 +769,7 @@ async def save_custom_edits(job_id: str, edits: Dict[str, Any]):
       }
     }
     """
+    authorize_job(job_id, request)
     job = _get_job(job_id)
     if not job:
         raise HTTPException(404, "找不到此工作")
@@ -664,12 +789,14 @@ async def save_custom_edits(job_id: str, edits: Dict[str, Any]):
 def rebuild_job(
     job_id: str,
     background_tasks: BackgroundTasks,
+    request: Request,
     layer_modes: Optional[str] = None,  # 相容舊版 JSON
     global_mode: str = "image_layer",
 ):
     """
     以使用者的 custom_edits 與指定模式重新產生 PPTX。
     """
+    authorize_job(job_id, request)
     job = _get_job(job_id)
     if not job:
         raise HTTPException(404, "找不到此工作")
@@ -741,7 +868,8 @@ def cleanup_all_expired():
 
 
 @app.get("/api/jobs/{job_id}/pages/{page_index}/background")
-def page_background(job_id: str, page_index: int):
+def page_background(job_id: str, page_index: int, request: Request):
+    authorize_job(job_id, request)
     if BACKEND.name == "core_api":
         return _remote_page_asset_redirect(job_id, page_index, "background")
     job = _get_job(job_id)
@@ -764,7 +892,8 @@ def page_background(job_id: str, page_index: int):
 
 
 @app.get("/api/jobs/{job_id}/pages/{page_index}/source")
-def page_source(job_id: str, page_index: int):
+def page_source(job_id: str, page_index: int, request: Request):
+    authorize_job(job_id, request)
     if BACKEND.name == "core_api":
         return _remote_page_asset_redirect(job_id, page_index, "source_image")
     job = _get_job(job_id)
@@ -787,7 +916,8 @@ def page_source(job_id: str, page_index: int):
 
 
 @app.get("/api/jobs/{job_id}/pages/{page_index}/layers/{layer_index}")
-def page_layer(job_id: str, page_index: int, layer_index: int):
+def page_layer(job_id: str, page_index: int, layer_index: int, request: Request):
+    authorize_job(job_id, request)
     if BACKEND.name == "core_api":
         return _remote_page_asset_redirect(job_id, page_index, "layer_files", layer_index)
     job = _get_job(job_id)
@@ -811,13 +941,15 @@ def page_layer(job_id: str, page_index: int, layer_index: int):
 
 
 @app.get("/api/jobs/{job_id}/artifacts/{artifact_path:path}")
-def remote_artifact(job_id: str, artifact_path: str):
+def remote_artifact(job_id: str, artifact_path: str, request: Request):
     """BFF-only redirect: browser receives a short-lived GCS URL, never a Core token."""
+    authorize_job(job_id, request)
     return _remote_artifact_redirect(job_id, artifact_path)
 
 
 @app.get("/api/jobs/{job_id}/download")
-def download_pptx(job_id: str, custom: bool = False):
+def download_pptx(job_id: str, request: Request, custom: bool = False):
+    authorize_job(job_id, request)
     if BACKEND.name == "core_api":
         if custom:
             raise HTTPException(409, "遠端工作尚不支援儲存自訂編輯版")
@@ -850,6 +982,99 @@ def download_pptx(job_id: str, custom: bool = False):
     )
 
 
+# ── 登入使用者：永久保存到自己的 Google Drive ────────────────────────────────
+def _job_pptx_bytes(job_id: str, job: Dict[str, Any]) -> tuple[bytes, str]:
+    """回傳 (PPTX bytes, 檔名主體)，local/core_api 兩種後端皆支援。"""
+    filename_stem = Path(job.get("filename") or "presentation").stem
+    if BACKEND.name == "core_api":
+        try:
+            result = BACKEND.get_result(job_id)
+        except Exception as exc:
+            raise _core_http_error(exc, "result") from exc
+        rebuilt_pptx = result.get("rebuilt_pptx")
+        if not isinstance(rebuilt_pptx, str) or not rebuilt_pptx:
+            raise HTTPException(404, "PPTX 尚未產生，請先匯出 PPTX")
+        try:
+            signed_url = BACKEND.artifact_redirect(job_id, rebuilt_pptx)
+        except Exception as exc:
+            raise _core_http_error(exc, "artifact") from exc
+        if not signed_url:
+            raise HTTPException(404, "檔案不存在或已過期")
+        import urllib.request
+        with urllib.request.urlopen(signed_url, timeout=60) as resp:
+            return resp.read(), filename_stem
+
+    pptx_path = job.get("rebuilt_pptx_custom") or job.get("rebuilt_pptx")
+    if not pptx_path or isinstance(pptx_path, str) and pptx_path.startswith(("http://", "https://")):
+        raise HTTPException(404, "PPTX 尚未產生，請先匯出 PPTX")
+    path = Path(pptx_path)
+    if not path.exists():
+        raise HTTPException(404, "PPTX 尚未產生，請先匯出 PPTX")
+    return path.read_bytes(), filename_stem
+
+
+def _ensure_drive_root_folder(access_token: str, user_id: str) -> str:
+    """取得（或建立）使用者專屬的 MagicLayerStudio Drive 資料夾，並快取到 Neon。"""
+    user = db.get_user(user_id)
+    cached = user.get("drive_root_folder_id") if user else None
+    if cached:
+        return cached
+    folder = google_drive_ensure_folder(access_token, "MagicLayerStudio")
+    folder_id = folder.get("id")
+    if not folder_id:
+        raise RuntimeError("無法建立/取得 Google Drive 的 MagicLayerStudio 資料夾")
+    db.set_user_drive_root_folder(user_id, folder_id)
+    return folder_id
+
+
+@app.post("/api/jobs/{job_id}/save_permanent")
+def save_job_permanent(job_id: str, request: Request):
+    """把工作的 PPTX 上傳到使用者自己的 Google Drive，並標記為永久保存。
+    這是登入使用者才能用的功能；會順便把匿名 job 認領給目前登入的使用者。"""
+    if not db.is_configured():
+        raise HTTPException(503, "此功能需要先設定資料庫（MAGICLAYER_STUDIO_DATABASE_URL）")
+    authorize_job(job_id, request)
+    _, session = resolve_google_session(request)
+    if not session or not session.get("user_id"):
+        raise HTTPException(401, "請先登入 Google 帳號才能永久保存")
+    access_token = str(session.get("access_token") or "")
+    if not access_token:
+        raise HTTPException(401, "登入憑證已失效，請重新登入")
+
+    job = _get_job(job_id)
+    if not job or job.get("status") != "done":
+        raise HTTPException(404, "資料尚未就緒")
+
+    pptx_bytes, filename_stem = _job_pptx_bytes(job_id, job)
+    user_id = str(session["user_id"])
+
+    try:
+        root_folder_id = _ensure_drive_root_folder(access_token, user_id)
+        drive_file = google_drive_upload_bytes(
+            access_token,
+            f"{filename_stem}.pptx",
+            root_folder_id,
+            pptx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        db.claim_job_for_user(job_id, user_id)
+        db.mark_job_permanent(job_id, root_folder_id, drive_file.get("id", ""))
+    except Exception as exc:
+        try:
+            db.mark_job_permanent_error(job_id, str(exc))
+        except Exception:
+            pass
+        raise HTTPException(502, f"永久保存到 Google Drive 失敗：{exc}") from exc
+
+    return {
+        "job_id": job_id,
+        "is_permanent": True,
+        "drive_folder_id": root_folder_id,
+        "drive_file_id": drive_file.get("id"),
+        "drive_web_link": drive_file.get("webViewLink"),
+    }
+
+
 # ── Image collection export (zip) ──────────────────────────────────────────
 def _zip_files(entries: Dict[str, Path], zip_path: Path):
     """把 {arcname: 實體檔案路徑} 打包成一個 zip 檔。"""
@@ -861,8 +1086,9 @@ def _zip_files(entries: Dict[str, Path], zip_path: Path):
 
 
 @app.get("/api/jobs/{job_id}/export/raw_images")
-def export_raw_images(job_id: str):
+def export_raw_images(job_id: str, request: Request):
     """把每頁的背景圖與原始去背文字圖層打包成 zip（不含使用者於畫布上的樣式調整）。"""
+    authorize_job(job_id, request)
     if BACKEND.name == "core_api":
         raise HTTPException(409, "遠端工作尚不支援匯出原始素材圖片")
     job = _get_job(job_id)
@@ -903,8 +1129,9 @@ def export_raw_images(job_id: str):
 
 
 @app.post("/api/jobs/{job_id}/export/composited_images")
-def export_composited_images(job_id: str, background_tasks: BackgroundTasks, custom: bool = True):
+def export_composited_images(job_id: str, background_tasks: BackgroundTasks, request: Request, custom: bool = True):
     """依目前的圖層設定，重組 PPTX 後將每頁畫面轉成圖片並打包成 zip。"""
+    authorize_job(job_id, request)
     if BACKEND.name == "core_api":
         raise HTTPException(409, "遠端工作尚不支援匯出合成畫面圖片")
     job = _get_job(job_id)
@@ -983,7 +1210,8 @@ def export_composited_images(job_id: str, background_tasks: BackgroundTasks, cus
 
 
 @app.get("/api/jobs/{job_id}/download_images")
-def download_composited_images(job_id: str):
+def download_composited_images(job_id: str, request: Request):
+    authorize_job(job_id, request)
     job = _get_job(job_id)
     if not job:
         raise HTTPException(404, "找不到此工作")
@@ -999,7 +1227,13 @@ def download_composited_images(job_id: str):
 # ── Google OAuth 2.0 Auth Module (Synced from audioStudio) ───────────────────
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
-GOOGLE_OAUTH_SCOPES = "https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email"
+GOOGLE_PICKER_API_KEY = os.environ.get("GOOGLE_PICKER_API_KEY", "").strip()
+GOOGLE_OAUTH_SCOPES = (
+    "https://www.googleapis.com/auth/userinfo.profile "
+    "https://www.googleapis.com/auth/userinfo.email "
+    "https://www.googleapis.com/auth/drive.readonly "
+    "https://www.googleapis.com/auth/drive.file"
+)
 GOOGLE_SESSION_COOKIE = "magiclayer_google_session"
 GOOGLE_OAUTH_STATE_COOKIE = "magiclayer_google_oauth_state"
 GOOGLE_OAUTH_NEXT_COOKIE = "magiclayer_google_oauth_next"
@@ -1068,6 +1302,165 @@ def google_fetch_profile(access_token: str) -> dict[str, Any]:
         raise RuntimeError(f"Google profile request failed: {exc}") from exc
 
 
+# ── Google Drive（登入使用者「永久保存」用，仿照 audioStudio）───────────────
+def _drive_query_value(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("'", "\\'")
+
+
+def google_drive_json(
+    access_token: str,
+    url: str,
+    *,
+    method: str = "GET",
+    payload: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    import urllib.request
+    from urllib.error import HTTPError, URLError
+
+    data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Google Drive HTTP {error.code}: {detail}") from error
+    except URLError as error:
+        raise RuntimeError(f"Google Drive 連線失敗：{error}") from error
+    return json.loads(body) if body.strip() else {}
+
+
+def google_drive_find_folder(access_token: str, name: str, parent_id: str = "root") -> Optional[dict[str, Any]]:
+    query = (
+        f"name = '{_drive_query_value(name)}' and mimeType = 'application/vnd.google-apps.folder' "
+        f"and '{_drive_query_value(parent_id)}' in parents and trashed = false"
+    )
+    url = f"https://www.googleapis.com/drive/v3/files?{urlencode({'q': query, 'spaces': 'drive', 'pageSize': 1, 'fields': 'files(id,name)'})}"
+    files = google_drive_json(access_token, url).get("files", [])
+    return files[0] if isinstance(files, list) and files else None
+
+
+def google_drive_create_folder(access_token: str, name: str, parent_id: str = "root") -> dict[str, Any]:
+    return google_drive_json(
+        access_token,
+        "https://www.googleapis.com/drive/v3/files?fields=id,name",
+        method="POST",
+        payload={"name": name, "mimeType": "application/vnd.google-apps.folder", "parents": [parent_id]},
+    )
+
+
+def google_drive_ensure_folder(access_token: str, name: str, parent_id: str = "root") -> dict[str, Any]:
+    return google_drive_find_folder(access_token, name, parent_id) or google_drive_create_folder(access_token, name, parent_id)
+
+
+def google_drive_upload_bytes(
+    access_token: str,
+    name: str,
+    parent_id: str,
+    content: bytes,
+    media_type: str,
+) -> dict[str, Any]:
+    """以 multipart/related 上傳二進位檔（如 PPTX）到使用者自己的 Google Drive。"""
+    import urllib.request
+    from urllib.error import HTTPError, URLError
+
+    boundary = f"magiclayerstudio-{uuid.uuid4().hex}"
+    metadata = json.dumps({"name": name, "mimeType": media_type, "parents": [parent_id]}, ensure_ascii=False).encode("utf-8")
+    body = b"".join(
+        [
+            f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode("utf-8"),
+            metadata,
+            f"\r\n--{boundary}\r\nContent-Type: {media_type}\r\n\r\n".encode("utf-8"),
+            content,
+            f"\r\n--{boundary}--\r\n".encode("utf-8"),
+        ]
+    )
+    req = urllib.request.Request(
+        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,parents",
+        data=body,
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": f"multipart/related; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            parsed = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Google Drive 上傳失敗 HTTP {error.code}: {detail}") from error
+    except URLError as error:
+        raise RuntimeError(f"Google Drive 上傳連線失敗：{error}") from error
+    if not isinstance(parsed, dict) or not parsed.get("id"):
+        raise RuntimeError("Google Drive 上傳回傳格式錯誤")
+    return parsed
+
+
+def _save_session(session_id: str, session: dict[str, Any]) -> None:
+    """寫入 session：一律更新記憶體快取；有設定 Neon 時同步寫入（跨冷啟動存活的真相來源）。"""
+    with _google_sessions_lock:
+        _google_sessions[session_id] = session
+    if db.is_configured():
+        try:
+            user = db.upsert_user(
+                session.get("sub", ""),
+                session.get("email", ""),
+                session.get("name", ""),
+                session.get("picture", ""),
+            )
+            session["user_id"] = str(user["id"])
+            if user.get("drive_root_folder_id"):
+                session["drive_root_folder_id"] = str(user["drive_root_folder_id"])
+            with _google_sessions_lock:
+                _google_sessions[session_id] = session
+            db.save_google_session(session_id, user["id"], session)
+        except Exception:
+            pass  # Neon 暫時不可用時，仍可靠記憶體快取繼續運作（同一個 serverless instance 內）
+
+
+def _load_session(session_id: str) -> Optional[dict[str, Any]]:
+    with _google_sessions_lock:
+        cached = _google_sessions.get(session_id)
+    if cached:
+        return dict(cached)
+    if not db.is_configured():
+        return None
+    try:
+        row = db.get_google_session(session_id)
+    except Exception:
+        return None
+    if not row:
+        return None
+    user = db.get_user(str(row["user_id"])) if row.get("user_id") else None
+    session = {
+        "sub": row.get("google_sub") or "",
+        "name": row.get("name") or "",
+        "email": row.get("email") or "",
+        "picture": row.get("picture_url") or "",
+        "access_token": row.get("access_token") or "",
+        "refresh_token": row.get("refresh_token") or "",
+        "expires_at": row["expires_at"].timestamp() if row.get("expires_at") else 0.0,
+        "user_id": str(row["user_id"]) if row.get("user_id") else None,
+        "drive_root_folder_id": str(user.get("drive_root_folder_id") or "") if user else "",
+    }
+    with _google_sessions_lock:
+        _google_sessions[session_id] = session
+    return dict(session)
+
+
+def _delete_session(session_id: str) -> None:
+    with _google_sessions_lock:
+        _google_sessions.pop(session_id, None)
+    if db.is_configured():
+        try:
+            db.delete_google_session(session_id)
+        except Exception:
+            pass
+
+
 def refresh_google_session(session_id: str, session: dict[str, Any]) -> tuple[Optional[str], Optional[dict[str, Any]]]:
     refresh_token = str(session.get("refresh_token") or "").strip()
     if not refresh_token or not google_oauth_enabled():
@@ -1094,13 +1487,11 @@ def refresh_google_session(session_id: str, session: dict[str, Any]) -> tuple[Op
             session["expires_at"] = time.time() + expires_in
             if tokens.get("refresh_token"):
                 session["refresh_token"] = str(tokens.get("refresh_token")).strip()
-            with _google_sessions_lock:
-                _google_sessions[session_id] = session
+            _save_session(session_id, session)
             return session_id, session
     except Exception as err:
         # 若 refresh 失敗（例如授權遭原廠撤銷），刪除此 Session
-        with _google_sessions_lock:
-            _google_sessions.pop(session_id, None)
+        _delete_session(session_id)
         return None, None
 
     return session_id, session
@@ -1110,12 +1501,10 @@ def resolve_google_session(request: Request) -> tuple[Optional[str], Optional[di
     session_id = str(request.cookies.get(GOOGLE_SESSION_COOKIE) or "").strip()
     if not session_id:
         return None, None
-    with _google_sessions_lock:
-        session = _google_sessions.get(session_id)
-        if not session:
-            return None, None
-        session_copy = dict(session)
-    return refresh_google_session(session_id, session_copy)
+    session = _load_session(session_id)
+    if not session:
+        return None, None
+    return refresh_google_session(session_id, session)
 
 
 @app.get("/auth/google/start")
@@ -1154,10 +1543,16 @@ def google_auth_callback(
     response.delete_cookie(GOOGLE_OAUTH_STATE_COOKIE)
     response.delete_cookie(GOOGLE_OAUTH_NEXT_COOKIE)
     if error:
+        logger.warning("Google OAuth callback returned error parameter: %s", error)
         response.delete_cookie(GOOGLE_SESSION_COOKIE)
         return response
     expected_state = str(request.cookies.get(GOOGLE_OAUTH_STATE_COOKIE) or "").strip()
     if not expected_state or not state or state != expected_state:
+        logger.warning(
+            "Google OAuth state mismatch: expected=%r, got=%r (check if host matches GOOGLE_REDIRECT_URI)",
+            expected_state,
+            state,
+        )
         response.delete_cookie(GOOGLE_SESSION_COOKIE)
         return response
     try:
@@ -1172,6 +1567,7 @@ def google_auth_callback(
         )
         access_token = str(tokens.get("access_token") or "").strip()
         if not access_token:
+            logger.warning("Google OAuth token response missing access_token: %s", tokens)
             response.delete_cookie(GOOGLE_SESSION_COOKIE)
             return response
         profile = google_fetch_profile(access_token)
@@ -1187,9 +1583,9 @@ def google_auth_callback(
             "expires_in": expires_in,
             "expires_at": time.time() + expires_in,
         }
-        with _google_sessions_lock:
-            _google_sessions[session_id] = session_data
+        _save_session(session_id, session_data)
     except Exception as oauth_err:
+        logger.warning("Google OAuth callback failed: %s", oauth_err, exc_info=True)
         response.delete_cookie(GOOGLE_SESSION_COOKIE)
         return response
     response.set_cookie(GOOGLE_SESSION_COOKIE, session_id, httponly=True, samesite="lax", max_age=GOOGLE_SESSION_COOKIE_MAX_AGE)
@@ -1200,11 +1596,21 @@ def google_auth_callback(
 def google_auth_logout(request: Request) -> JSONResponse:
     session_id = str(request.cookies.get(GOOGLE_SESSION_COOKIE) or "").strip()
     if session_id:
-        with _google_sessions_lock:
-            _google_sessions.pop(session_id, None)
+        _delete_session(session_id)
     response = JSONResponse({"ok": True})
     response.delete_cookie(GOOGLE_SESSION_COOKIE)
     return response
+
+
+@app.get("/api/google-config")
+def google_config() -> dict[str, str]:
+    client_id = GOOGLE_CLIENT_ID
+    app_id = client_id.split("-")[0] if "-" in client_id else ""
+    return {
+        "client_id": client_id,
+        "picker_api_key": GOOGLE_PICKER_API_KEY,
+        "app_id": app_id,
+    }
 
 
 @app.get("/api/auth/session")
@@ -1216,6 +1622,7 @@ def google_session_info(request: Request) -> dict[str, Any]:
             "authenticated": False,
             "missing": missing_google_oauth_config(),
         }
+    folder_id = str(session.get("drive_root_folder_id") or "").strip()
     return {
         "configured": google_oauth_enabled(),
         "authenticated": True,
@@ -1224,7 +1631,32 @@ def google_session_info(request: Request) -> dict[str, Any]:
         "name": session.get("name", ""),
         "email": session.get("email", ""),
         "picture": session.get("picture", ""),
+        "access_token": session.get("access_token", ""),
+        "drive_root_folder_id": folder_id or None,
+        "drive_folder_url": f"https://drive.google.com/drive/folders/{folder_id}" if folder_id else None,
     }
+
+
+@app.get("/api/drive/root_folder")
+def get_or_create_drive_root_folder(request: Request) -> dict[str, Any]:
+    session_id, session = resolve_google_session(request)
+    if not session_id or not session:
+        raise HTTPException(401, "請先登入 Google 帳號")
+    access_token = str(session.get("access_token") or "").strip()
+    if not access_token:
+        raise HTTPException(401, "缺少有效的 Google Access Token")
+    user_id = str(session.get("user_id") or session.get("sub") or "")
+    try:
+        folder_id = _ensure_drive_root_folder(access_token, user_id)
+        session["drive_root_folder_id"] = folder_id
+        with _google_sessions_lock:
+            _google_sessions[session_id] = session
+        return {
+            "folder_id": folder_id,
+            "folder_url": f"https://drive.google.com/drive/folders/{folder_id}",
+        }
+    except Exception as exc:
+        raise HTTPException(502, f"取得/建立 Google Drive 資料夾失敗：{exc}") from exc
 
 
 if __name__ == "__main__":

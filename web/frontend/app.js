@@ -3,6 +3,54 @@
 
 const API = '';  // 後端同 origin
 
+// ── 瀏覽器認領清單（未登入時，後端靠這份清單判斷「這是我建立的工作」）────────
+// 仿照 audioStudio 的 browserSongIds 機制：只存 job id，不存個資；
+// 上限 100 筆；登入後伺服器改用帳號判斷擁有權，這份清單仍可讓同瀏覽器看到登入前建立的工作。
+const BROWSER_JOB_IDS_KEY = 'magiclayer.studio.browserJobIds';
+
+function browserJobIds() {
+  try {
+    const ids = JSON.parse(localStorage.getItem(BROWSER_JOB_IDS_KEY) || '[]');
+    return Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+function rememberBrowserJobId(jobId) {
+  if (!jobId) return;
+  const ids = browserJobIds().filter((id) => id !== jobId);
+  localStorage.setItem(BROWSER_JOB_IDS_KEY, JSON.stringify([jobId, ...ids].slice(0, 100)));
+}
+function forgetBrowserJobId(jobId) {
+  if (!jobId) return;
+  localStorage.setItem(BROWSER_JOB_IDS_KEY, JSON.stringify(browserJobIds().filter((id) => id !== jobId)));
+}
+
+// 所有打去同源 /api/ 的請求自動夾帶認領清單，後端據此判斷匿名工作的存取權限。
+// 用包一層 fetch 的方式，不必逐一修改既有的呼叫點。
+const _nativeFetch = window.fetch.bind(window);
+window.fetch = function patchedFetch(input, init) {
+  try {
+    const isRequestObj = typeof Request !== 'undefined' && input instanceof Request;
+    const rawUrl = isRequestObj ? input.url : String(input);
+    const url = new URL(rawUrl, window.location.origin);
+    if (url.origin === window.location.origin && url.pathname.startsWith('/api/')) {
+      const ids = browserJobIds();
+      if (ids.length && !url.searchParams.has('browser_job_ids')) {
+        url.searchParams.set('browser_job_ids', ids.join(','));
+      }
+      if (isRequestObj) {
+        input = new Request(url.toString(), input);
+      } else {
+        input = url.toString();
+      }
+    }
+  } catch (_) {
+    // URL 解析失敗（例如非標準 input）時，原樣送出，不阻擋請求
+  }
+  return _nativeFetch(input, init);
+};
+
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
   file: null,
@@ -39,6 +87,16 @@ const state = {
 
   // 互動畫布縮放比例（1 = 100%）
   canvasZoom: 1,
+
+  // 登入狀態與目前工作的永久保存狀態
+  authenticated: false,
+  isPermanent: false,
+  driveWebLink: null,
+  googleAccessToken: '',
+  googlePickerReady: false,
+  googleConfig: { client_id: '', picker_api_key: '', app_id: '' },
+  driveFolderUrl: null,
+  driveFolderId: null,
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -48,6 +106,7 @@ const $fileInput       = $('file-input');
 const $fileInfo        = $('file-info');
 const $fileName        = $('file-name');
 const $btnRemove       = $('btn-remove-file');
+const $btnDrivePicker  = $('btn-drive-picker');
 const $btnProcess      = $('btn-process');
 const $btnCancelProcess = $('btn-cancel-process');
 const $btnGoogleLogin  = $('btn-google-login');
@@ -106,6 +165,10 @@ const $actionInfo      = $('action-info');
 const $btnDownload     = $('btn-download');
 const $btnExportRawImages        = $('btn-export-raw-images');
 const $btnExportCompositedImages = $('btn-export-composited-images');
+const $btnSavePermanent = $('btn-save-permanent');
+const $labelSavePermanent = $('label-save-permanent');
+const $iconSavePermanentCloud = $('icon-save-permanent-cloud');
+const $iconSavePermanentCheck = $('icon-save-permanent-check');
 const $btnReprocess    = $('btn-reprocess');
 const $btnDeleteJob    = $('btn-delete-job');
 const $paramsToggle    = $('params-toggle');
@@ -253,7 +316,31 @@ function syncDisabledControls() {
   $btnDownload.disabled = busy || !state.jobId;
   $btnExportRawImages.disabled = busy || !state.jobId;
   $btnExportCompositedImages.disabled = busy || !state.jobId;
+  if ($btnSavePermanent) $btnSavePermanent.disabled = busy || !state.jobId || state.isPermanent;
   $btnDeleteJob.disabled = busy || !state.jobId;
+}
+
+// 依登入狀態與目前工作的永久保存狀態，更新「永久保存至雲端」按鈕的外觀。
+function updateSavePermanentUi() {
+  if (!$btnSavePermanent) return;
+  if (state.isPermanent) {
+    if ($iconSavePermanentCloud) $iconSavePermanentCloud.classList.add('hidden');
+    if ($iconSavePermanentCheck) $iconSavePermanentCheck.classList.remove('hidden');
+    if ($labelSavePermanent) $labelSavePermanent.textContent = '已永久保存';
+    $btnSavePermanent.classList.add('btn-success');
+    $btnSavePermanent.title = state.driveWebLink
+      ? '已保存到你的 Google Drive，點擊開啟'
+      : '已永久保存到你的 Google Drive';
+  } else {
+    if ($iconSavePermanentCloud) $iconSavePermanentCloud.classList.remove('hidden');
+    if ($iconSavePermanentCheck) $iconSavePermanentCheck.classList.add('hidden');
+    if ($labelSavePermanent) $labelSavePermanent.textContent = '永久保存至雲端';
+    $btnSavePermanent.classList.remove('btn-success');
+    $btnSavePermanent.title = state.authenticated
+      ? '把 PPTX 永久保存到你自己的 Google Drive'
+      : '登入後可把 PPTX 永久保存到你自己的 Google Drive；未登入的工作暫存到期後會被清除';
+  }
+  syncDisabledControls();
 }
 
 function confirmAction({ title, message, confirmLabel = '確認', danger = false }) {
@@ -422,6 +509,7 @@ async function startProcess() {
       ({ job_id } = await upRes.json());
     }
     state.jobId = job_id;
+    rememberBrowserJobId(job_id);
 
     setStatus('processing');
     setBusy(true, '正在分離圖層', '大型簡報可能需要幾分鐘，完成後會自動顯示頁面縮圖。');
@@ -548,11 +636,14 @@ async function loadResult(job_id) {
     state.rebuiltPptx = data.rebuilt_pptx;
     state.jobSize = data.size_mb || null;
     state.customEdits = data.custom_edits || {};
+    state.isPermanent = Boolean(data.is_permanent);
+    state.driveWebLink = data.drive_web_link || null;
     state.undoStack = [];
     state.redoStack = [];
     setStatus('done');
     renderPages();
     if (state.pages.length > 0) selectPage(0);
+    updateSavePermanentUi();
   } catch (err) {
     console.error('load result failed', err);
     setStatus('error', err.message || '無法取得結果');
@@ -2705,6 +2796,44 @@ async function _waitForImageExport(maxWait = 120000) {
   setBusy(false);
 }
 
+if ($btnSavePermanent) {
+  $btnSavePermanent.addEventListener('click', async () => {
+    if (!state.jobId || state.isBusy) return;
+
+    // 已經永久保存過：按鈕變成「開啟 Google Drive 檔案」的捷徑
+    if (state.isPermanent) {
+      if (state.driveWebLink) window.open(state.driveWebLink, '_blank', 'noopener');
+      return;
+    }
+
+    if (!state.authenticated) {
+      const next = `/app?job_id=${encodeURIComponent(state.jobId)}`;
+      window.location.href = `${API}/auth/google/start?next=${encodeURIComponent(next)}`;
+      return;
+    }
+
+    if (state.isDirty) {
+      await saveCustomEdits();
+      if (state.isDirty) return;
+    }
+
+    setBusy(true, '正在保存到 Google Drive', '會先重新產生最新版 PPTX，再上傳到你的 MagicLayerStudio 資料夾。');
+    try {
+      const r = await fetch(`${API}/api/jobs/${state.jobId}/save_permanent`, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || '永久保存失敗');
+      state.isPermanent = true;
+      state.driveWebLink = data.drive_web_link || null;
+      updateSavePermanentUi();
+      toast('已永久保存到你的 Google Drive！', 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  });
+}
+
 $btnDeleteJob.addEventListener('click', async () => {
   if (!state.jobId || state.isBusy) return;
   const ok = await confirmAction({
@@ -2721,6 +2850,7 @@ $btnDeleteJob.addEventListener('click', async () => {
       const err = await r.json().catch(() => ({ detail: '清除失敗' }));
       throw new Error(err.detail);
     }
+    forgetBrowserJobId(state.jobId);
     toast('已清除工作暫存資料', 'success');
     clearFile();
   } catch (e) {
@@ -2770,27 +2900,181 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+async function initGooglePicker() {
+  try {
+    const res = await fetch(`${API}/api/google-config`);
+    if (res.ok) {
+      state.googleConfig = await res.json();
+      const meta = document.querySelector('meta[name="google-client-id"]');
+      if (meta && state.googleConfig.client_id) {
+        meta.content = state.googleConfig.client_id;
+      }
+    }
+  } catch (e) {
+    console.debug('Google config unavailable', e);
+  }
+
+  const waitForPicker = window.setInterval(() => {
+    if (!window.gapi?.load) return;
+    window.clearInterval(waitForPicker);
+    window.gapi.load('picker', () => {
+      state.googlePickerReady = true;
+      console.log('[GooglePicker] Picker library successfully loaded via gapi');
+    });
+  }, 100);
+  window.setTimeout(() => {
+    window.clearInterval(waitForPicker);
+    if (!state.googlePickerReady) {
+      console.warn('[GooglePicker] Timeout waiting for gapi.load("picker")');
+    }
+  }, 10000);
+}
+
 async function checkAuthSession() {
   try {
     const res = await fetch(`${API}/api/auth/session`);
     if (!res.ok) return;
     const data = await res.json();
+    state.authenticated = Boolean(data.authenticated);
     if (data.authenticated) {
+      state.googleAccessToken = data.access_token || '';
+      state.driveFolderId = data.drive_root_folder_id || null;
+      state.driveFolderUrl = data.drive_folder_url || null;
       if ($btnGoogleLogin) $btnGoogleLogin.classList.add('hidden');
       if ($userProfile) {
         $userProfile.classList.remove('hidden');
         if ($userAvatar && data.picture) $userAvatar.src = data.picture;
         if ($userName) $userName.textContent = data.name || data.email || '已登入';
       }
-    } else if (data.configured) {
-      if ($btnGoogleLogin) $btnGoogleLogin.classList.remove('hidden');
-      if ($userProfile) $userProfile.classList.add('hidden');
     } else {
-      if ($btnGoogleLogin) $btnGoogleLogin.classList.add('hidden');
+      state.googleAccessToken = '';
+      state.driveFolderId = null;
+      state.driveFolderUrl = null;
+      if ($btnGoogleLogin) {
+        if (data.configured) $btnGoogleLogin.classList.remove('hidden');
+        else $btnGoogleLogin.classList.add('hidden');
+      }
       if ($userProfile) $userProfile.classList.add('hidden');
     }
+    updateSavePermanentUi();
   } catch (e) {
     console.warn('Check auth session failed:', e);
+  }
+}
+
+if ($btnDrivePicker) {
+  $btnDrivePicker.addEventListener('click', (e) => {
+    e.preventDefault();
+    console.log('[GooglePicker] Clicked "從 Google Drive 選取"', {
+      authenticated: state.authenticated,
+      hasToken: Boolean(state.googleAccessToken),
+      pickerReady: state.googlePickerReady,
+      hasGapi: Boolean(window.gapi),
+      hasPicker: Boolean(window.google?.picker),
+    });
+    if (!state.authenticated || !state.googleAccessToken) {
+      toast('請先登入 Google 帳號以啟用雲端檔案選取', 'info');
+      window.location.href = '/auth/google/start?next=/app';
+      return;
+    }
+    openDrivePicker();
+  });
+}
+
+function openDrivePicker() {
+  if (!state.authenticated || !state.googleAccessToken) {
+    toast('請先登入 Google 帳號', 'info');
+    return;
+  }
+  const pickerApiKey = state.googleConfig?.picker_api_key || '';
+  if (!pickerApiKey) {
+    console.error('[GooglePicker] Missing GOOGLE_PICKER_API_KEY');
+    toast('尚未設定 GOOGLE_PICKER_API_KEY。', 'error');
+    return;
+  }
+  if (!state.googlePickerReady || !window.google?.picker) {
+    console.warn('[GooglePicker] Picker library not ready yet');
+    toast('Drive 選取器載入中，請稍候 2 秒再試。', 'info');
+    return;
+  }
+  try {
+    const docsView = new google.picker.DocsView()
+      .setIncludeFolders(false)
+      .setMimeTypes('application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint,application/vnd.google-apps.presentation,application/pdf,image/png,image/jpeg,image/webp');
+
+    const builder = new google.picker.PickerBuilder()
+      .setOAuthToken(state.googleAccessToken)
+      .setDeveloperKey(pickerApiKey)
+      .setOrigin(location.origin)
+      .addView(docsView)
+      .addView(new google.picker.DocsUploadView())
+      .setCallback(async (data) => {
+        console.log('[GooglePicker] Callback action:', data.action, data);
+        if (data.action === google.picker.Action.CANCEL) {
+          console.log('[GooglePicker] Picker dismissed by user');
+          return;
+        }
+        if (data.action === google.picker.Action.LOADED) {
+          console.log('[GooglePicker] Picker dialog loaded and visible');
+          return;
+        }
+        if (data.action !== google.picker.Action.PICKED) return;
+        const fileDoc = data.docs?.[0];
+        if (fileDoc) {
+          console.log('[GooglePicker] Picked file:', fileDoc);
+          await importDriveFile(fileDoc);
+        }
+      });
+
+    const appId = state.googleConfig?.app_id;
+    if (appId) {
+      builder.setAppId(appId);
+    }
+    const picker = builder.build();
+    picker.setVisible(true);
+  } catch (err) {
+    console.error('[GooglePicker] Open drive picker error:', err);
+    toast('開啟雲端選取器失敗：' + err.message, 'error');
+  }
+}
+
+async function importDriveFile(fileDoc) {
+  if (!fileDoc?.id) return;
+  const fileName = fileDoc.name || 'presentation.pptx';
+  const isGoogleSlide = fileDoc.mimeType === 'application/vnd.google-apps.presentation';
+
+  console.log('[GooglePicker] Starting to import file:', { id: fileDoc.id, name: fileName, mimeType: fileDoc.mimeType });
+  setBusy(true, '正在從雲端載入檔案', `系統正在從 Google Drive 取得「${fileName}」…`);
+  try {
+    let downloadUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileDoc.id)}?alt=media`;
+    if (isGoogleSlide) {
+      downloadUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileDoc.id)}/export?mimeType=application/vnd.openxmlformats-officedocument.presentationml.presentation`;
+    }
+
+    const res = await fetch(downloadUrl, {
+      headers: {
+        Authorization: `Bearer ${state.googleAccessToken}`,
+      },
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => null);
+      const errMsg = errBody?.error?.message || `HTTP ${res.status}`;
+      throw new Error(errMsg);
+    }
+    const blob = await res.blob();
+    console.log('[GooglePicker] File blob fetched successfully, size:', blob.size);
+    const finalName = isGoogleSlide && !fileName.toLowerCase().endsWith('.pptx') ? `${fileName}.pptx` : fileName;
+    const mimeType = isGoogleSlide ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation' : (fileDoc.mimeType || 'application/octet-stream');
+    const file = new File([blob], finalName, { type: mimeType });
+
+    // 必須先解除 isBusy，否則 setFile() 會被 if (state.isBusy) return 直接擋掉！
+    setBusy(false);
+    setFile(file);
+    toast(`已成功載入「${finalName}」，可點擊開始分析圖層`, 'success');
+  } catch (err) {
+    console.error('[GooglePicker] Drive import failed:', err);
+    toast(`從 Google Drive 載入失敗：${err.message}`, 'error');
+    setBusy(false);
   }
 }
 
@@ -2800,7 +3084,13 @@ if ($btnLogout) {
       await fetch(`${API}/auth/google/logout`, { method: 'POST' });
       toast('已成功登出', '');
       if ($userProfile) $userProfile.classList.add('hidden');
+      if ($btnDriveFolder) $btnDriveFolder.classList.add('hidden');
       if ($btnGoogleLogin) $btnGoogleLogin.classList.remove('hidden');
+      state.authenticated = false;
+      state.googleAccessToken = '';
+      state.driveFolderId = null;
+      state.driveFolderUrl = null;
+      updateSavePermanentUi();
     } catch (e) {
       console.warn('Logout failed:', e);
     }
@@ -2818,6 +3108,7 @@ async function loadCapabilities() {
     $headerStatusText.textContent = state.uploadMode === 'gcs' ? '安全直傳模式' : '本機工作台';
     syncDisabledControls();
     checkAuthSession();
+    initGooglePicker();
   } catch (error) {
     state.capabilitiesReady = false;
     console.error('capability check failed', error);

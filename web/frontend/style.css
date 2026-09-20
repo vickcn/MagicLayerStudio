@@ -444,6 +444,39 @@ body.is-busy .main-content { pointer-events: none; }
   font-size: .72rem;
 }
 
+.upload-drive-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
+}
+
+.btn-drive-picker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  font-size: .8rem;
+  font-weight: 500;
+  color: var(--text-sub);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.btn-drive-picker:hover {
+  border-color: var(--primary);
+  background: var(--surface-tint);
+  color: var(--primary-dk);
+}
+
+.btn-drive-picker svg {
+  color: var(--primary);
+}
+
 .upload-file-info {
   display: flex;
   align-items: center;
@@ -581,6 +614,9 @@ select { padding: 4px 8px; }
 
 .btn-accent { background: var(--accent); color: #fff; }
 .btn-accent:not(:disabled):hover { background: var(--accent-dk); }
+
+.btn-success { background: var(--success); color: #fff; border-color: var(--success); }
+.btn-success:not(:disabled):hover { opacity: .9; }
 
 .btn-outline {
   background: transparent;
