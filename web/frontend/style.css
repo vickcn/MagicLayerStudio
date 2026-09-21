@@ -43,6 +43,12 @@ html {
   font-size: 15px;
   -webkit-font-smoothing: antialiased;
 }
+/* 上傳/分析處理中：關閉手機瀏覽器在頁面頂端下拉觸發的原生刷新手勢。
+   beforeunload/keydown 只在真的要導覽/重新整理時生效，攔不到這個滑動手勢本身。 */
+html.block-pull-refresh,
+html.block-pull-refresh body {
+  overscroll-behavior-y: contain;
+}
 body {
   /* 全站中英文：英數 Times 優先命中，中文落到 LXGW WenKai 霞鶩文楷 */
   font-family: var(--font-data);

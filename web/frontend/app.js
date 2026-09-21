@@ -680,6 +680,10 @@ async function loadResult(job_id) {
 function setStatus(s, msg) {
   state.status = s;
   document.body.dataset.status = s;
+  // 處理中關閉手機的下拉刷新手勢（overscroll-behavior 攔不到 beforeunload，
+  // 得靠這個才能擋住滑動觸發的重新整理），其餘狀態維持手機原生下拉刷新可用
+  const blockPullRefresh = s === 'uploading' || s === 'processing';
+  document.documentElement.classList.toggle('block-pull-refresh', blockPullRefresh);
   $statusText.className = 'status-text';
   $progressWrap.classList.remove('hidden');
   $progressBar.classList.remove('indeterminate');
