@@ -312,7 +312,7 @@ function syncDisabledControls() {
   const canCancel = state.uploadMode === 'gcs' && state.jobId && state.status === 'processing';
   $btnCancelProcess.classList.toggle('hidden', !canCancel);
   $btnCancelProcess.disabled = !canCancel || state.isCancelling;
-  $btnReprocess.disabled = busy || !state.file;
+  $btnReprocess.disabled = busy || !state.file || !state.capabilitiesReady;
   $btnDownload.disabled = busy || !state.jobId;
   $btnExportRawImages.disabled = busy || !state.jobId;
   $btnExportCompositedImages.disabled = busy || !state.jobId;
@@ -469,9 +469,32 @@ async function startProcess() {
   setBusy(true, '正在上傳檔案', '檔案上傳後會立即開始分析圖層。');
 
   try {
+    // 用當下即時的 health 結果決定上傳模式，不要信任頁面載入時快取的
+    // state.uploadMode（分頁開很久、或第一次 loadCapabilities() 沒成功，都可能讓
+    // 快取值過期或停在預設的 local）。走錯 local 分支會把整個大檔案直接塞進
+    // Vercel serverless function 的 request body，撞上平台層的大小上限，在
+    // function 執行前就被 edge 擋成 413 —— 前端只會看到上傳「卡住/失敗」，
+    // 沒有任何可讀的錯誤訊息，使用者只能重整頁面。仿照 audioStudio 每次上傳前
+    // 都重新問一次 /api/health，而不是沿用進頁面時的舊快取。
+    let uploadMode = state.uploadMode;
+    try {
+      const healthRes = await fetch(`${API}/api/health`);
+      if (!healthRes.ok) throw new Error(`HTTP ${healthRes.status}`);
+      const health = await healthRes.json();
+      uploadMode = health.upload_mode === 'gcs' ? 'gcs' : 'local';
+      state.uploadMode = uploadMode;
+      state.capabilitiesReady = true;
+      document.body.dataset.uploadMode = uploadMode;
+    } catch (healthErr) {
+      console.warn('即時 health 檢查失敗，改用先前快取的上傳模式', healthErr);
+      if (!uploadMode) {
+        throw new Error('無法確認上傳模式，請重新整理頁面後再試一次');
+      }
+    }
+
     const params = getParams();
     let job_id;
-    if (state.uploadMode === 'gcs') {
+    if (uploadMode === 'gcs') {
       const prepareRes = await fetch(`${API}/api/upload/prepare`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -513,7 +536,7 @@ async function startProcess() {
 
     setStatus('processing');
     setBusy(true, '正在分離圖層', '大型簡報可能需要幾分鐘，完成後會自動顯示頁面縮圖。');
-    if (state.uploadMode !== 'gcs') {
+    if (uploadMode !== 'gcs') {
       const qs = new URLSearchParams(params).toString();
       const procRes = await fetch(`${API}/api/process/${job_id}?${qs}`, { method: 'POST' });
       if (!procRes.ok) {
