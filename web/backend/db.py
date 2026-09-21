@@ -6,13 +6,21 @@ Source of truth for:
     cold starts across serverless invocations).
   - Job ownership (which signed-in user created a job, or nobody) and its
     permanent-save state (Google Drive folder/file ids).
+  - Per-part Drive backups (job_drive_parts) plus a snapshot of the job's
+    pages/rebuilt_pptx structure (jobs.pages_manifest), taken at "永久保存"
+    time. Core's GCS artifacts and its own result-manifest share one TTL and
+    get purged together, so once that happens Core can no longer answer
+    "what pages/parts did this job have" either — Neon has to be able to
+    answer that on its own from this snapshot, exactly like audioStudio
+    keeps a revision's full analysis_artifacts ledger in its own Postgres
+    row instead of trusting audioCore's cache to still be there.
 
-This module intentionally does NOT store per-page pipeline results
-(backgrounds, layers, PPTX bytes) — those stay wherever they already live
-(local disk in dev, GCS via Core in production). Only lightweight
-ownership/session rows live here, mirroring the audioStudio/audioCore
-pattern (Neon owns Studio-side ownership; the heavy processing backend
-owns execution state).
+Studio does not persist actual pipeline bytes here (backgrounds, layers,
+PPTX content) — those stay wherever they already live (local disk in dev,
+GCS via Core in production, or the user's own Google Drive once backed up).
+Only lightweight ownership/session/manifest rows live here, mirroring the
+audioStudio/audioCore pattern (Neon owns Studio-side ownership; the heavy
+processing backend owns execution state).
 
 Local development without a configured database URL leaves this module
 inert (`is_configured()` False); callers fall back to the pre-existing
@@ -257,3 +265,59 @@ def mark_job_permanent_error(job_id: str, error: str) -> None:
 
 def delete_job_ownership(job_id: str) -> None:
     _execute("DELETE FROM jobs WHERE job_id = %s", (job_id,))
+
+
+# ── Job parts backed up to the owner's Google Drive ─────────────────────────
+# 記錄每個 Core 解析部件（背景圖、圖層 PNG、layers/objects.json、重建 PPTX）
+# 備份到 .MagicLayerStudio Drive 資料夾後對應的 file id；Core 端的 GCS 產物過期
+# 後，介面可以改從這裡回載，不必重新分析。
+
+def save_job_drive_part(job_id: str, relative_path: str, drive_file_id: str, content_type: str = "", size_bytes: int = 0) -> None:
+    _execute(
+        """
+        INSERT INTO job_drive_parts (job_id, relative_path, drive_file_id, content_type, size_bytes, synced_at)
+        VALUES (%s, %s, %s, %s, %s, now())
+        ON CONFLICT (job_id, relative_path) DO UPDATE SET
+            drive_file_id = EXCLUDED.drive_file_id,
+            content_type = EXCLUDED.content_type,
+            size_bytes = EXCLUDED.size_bytes,
+            synced_at = now()
+        """,
+        (job_id, relative_path, drive_file_id, content_type, size_bytes),
+    )
+
+
+def get_job_drive_part(job_id: str, relative_path: str) -> Optional[dict]:
+    return _fetchone(
+        "SELECT * FROM job_drive_parts WHERE job_id = %s AND relative_path = %s",
+        (job_id, relative_path),
+    )
+
+
+def list_job_drive_parts(job_id: str) -> list[dict]:
+    return _fetchall(
+        "SELECT * FROM job_drive_parts WHERE job_id = %s ORDER BY relative_path",
+        (job_id,),
+    )
+
+
+def save_job_pages_manifest(job_id: str, pages_manifest: list, rebuilt_pptx_relative: Optional[str]) -> None:
+    """快照備份當下的 pages/rebuilt_pptx 結構，讓 Core 端過期後仍能獨立重建 result 形狀。"""
+    import json as _json
+
+    _execute(
+        """
+        UPDATE jobs SET pages_manifest = %s, rebuilt_pptx_relative = %s, parts_backed_up_at = now()
+        WHERE job_id = %s
+        """,
+        (_json.dumps(pages_manifest, ensure_ascii=False), rebuilt_pptx_relative, job_id),
+    )
+
+
+# ── Google session lookup by user (background rehydrate; no request cookie) ─
+
+def get_google_session_by_user(user_id: str) -> Optional[dict]:
+    return _fetchone(
+        "SELECT * FROM google_sessions WHERE user_id = %s ORDER BY updated_at DESC LIMIT 1",
+        (user_id,),
+    )

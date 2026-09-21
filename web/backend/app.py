@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import shutil
 import subprocess
@@ -17,12 +18,12 @@ import uuid
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, quote, urlencode
 
 import aiofiles
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 # ── Project root ─────────────────────────────────────────────────────────────
@@ -291,21 +292,127 @@ def _core_http_error(error: Exception, operation: str) -> HTTPException:
     )
 
 
+def _cached_job_result_from_drive_backup(job_id: str) -> Optional[Dict[str, Any]]:
+    """Core 端過期/不可用時的最後手段：讀回「永久保存」時快照在 Neon 的
+    pages/rebuilt_pptx 結構（jobs.pages_manifest），讓 result/artifact 端點
+    不必倚賴 Core 還記得這個 job。找不到快照就回傳 None，維持原本的錯誤行為。"""
+    if not db.is_configured():
+        return None
+    try:
+        ownership = db.get_job_ownership(job_id)
+    except Exception:
+        return None
+    if not ownership or not ownership.get("pages_manifest"):
+        return None
+    pages_manifest = ownership["pages_manifest"]
+    if isinstance(pages_manifest, str):
+        try:
+            pages_manifest = json.loads(pages_manifest)
+        except Exception:
+            return None
+    if not isinstance(pages_manifest, list):
+        return None
+    return {"pages": pages_manifest, "rebuilt_pptx": ownership.get("rebuilt_pptx_relative")}
+
+
+def _core_result_or_drive_backup(job_id: str) -> Dict[str, Any]:
+    """先問 Core 即時結果；Core 的 GCS 產物與 result-manifest 過期/被清除後，
+    改用「永久保存」時備份到 Drive 當下的快照結構（回到已備份的版本，而不是
+    整個對此 job 一無所知）。兩邊都沒有才把原始例外往上丟。"""
+    try:
+        return BACKEND.get_result(job_id)
+    except Exception as exc:
+        cached = _cached_job_result_from_drive_backup(job_id)
+        if cached is not None:
+            return cached
+        raise exc
+
+
+def _usable_access_token_for_job_owner(job_id: str) -> Optional[str]:
+    """取得此 job 擁有者目前仍可用的 Google access token，供背景回載使用——
+    不依賴目前這次請求的登入 cookie（例如過期後由任何持有此 job 的人打開頁面
+    都該能觸發回載，只要當初是擁有者本人存進自己 Drive 的）。"""
+    if not db.is_configured():
+        return None
+    try:
+        ownership = db.get_job_ownership(job_id)
+    except Exception:
+        return None
+    user_id = ownership.get("user_id") if ownership else None
+    if not user_id:
+        return None
+    try:
+        row = db.get_google_session_by_user(str(user_id))
+    except Exception:
+        return None
+    if not row:
+        return None
+    session = {
+        "sub": row.get("google_sub") or "",
+        "access_token": row.get("access_token") or "",
+        "refresh_token": row.get("refresh_token") or "",
+        "expires_at": row["expires_at"].timestamp() if row.get("expires_at") else 0.0,
+        "user_id": str(row["user_id"]) if row.get("user_id") else None,
+    }
+    try:
+        _, refreshed = refresh_google_session(str(row["id"]), session)
+    except Exception:
+        refreshed = session
+    return str((refreshed or {}).get("access_token") or "").strip() or None
+
+
+def _drive_part_bytes(job_id: str, relative_path: str) -> Optional[bytes]:
+    """從使用者自己 Drive 裡 .MagicLayerStudio 的備份取回一個部件的原始 bytes。
+    任何一步失敗（沒備份過、沒有可用登入、下載失敗）都回傳 None，讓呼叫端
+    可以照舊 fall back 到原本的 404，而不是把內部錯誤外洩給前端。"""
+    if not db.is_configured():
+        return None
+    try:
+        part = db.get_job_drive_part(job_id, relative_path)
+    except Exception:
+        part = None
+    if not part or not part.get("drive_file_id"):
+        return None
+    access_token = _usable_access_token_for_job_owner(job_id)
+    if not access_token:
+        return None
+    try:
+        return google_drive_download_bytes(access_token, str(part["drive_file_id"]))
+    except Exception:
+        return None
+
+
+def _drive_fallback_for_job_part(job_id: str, relative_path: str) -> Optional[Response]:
+    """Core 端的 GCS 部件過期或遺失時，改從 Drive 備份回載並直接把內容串回去
+    （不是簽名 URL 轉址，因為檔案不再是 Core 的）。"""
+    content = _drive_part_bytes(job_id, relative_path)
+    if content is None:
+        return None
+    media_type = mimetypes.guess_type(relative_path)[0] or "application/octet-stream"
+    return Response(content=content, media_type=media_type)
+
+
 def _remote_artifact_redirect(job_id: str, relative_path: str):
     if BACKEND.name != "core_api":
         raise HTTPException(404, "遠端檔案服務未啟用")
     try:
         signed_url = BACKEND.artifact_redirect(job_id, relative_path)
     except Exception as exc:
+        fallback = _drive_fallback_for_job_part(job_id, relative_path)
+        if fallback is not None:
+            return fallback
         raise _core_http_error(exc, "artifact") from exc
     if not signed_url:
+        fallback = _drive_fallback_for_job_part(job_id, relative_path)
+        if fallback is not None:
+            return fallback
         raise HTTPException(404, "檔案不存在或已過期")
     return RedirectResponse(url=signed_url, status_code=307)
 
 
 def _remote_page_asset_redirect(job_id: str, page_index: int, field: str, layer_index: int = 0):
     try:
-        result = BACKEND.get_result(job_id)
+        result = _core_result_or_drive_backup(job_id)
     except Exception as exc:
         raise _core_http_error(exc, "result") from exc
     pages = result.get("pages") or []
@@ -659,7 +766,7 @@ def job_result(job_id: str, request: Request):
     if not job:
         if BACKEND.name == "core_api":
             try:
-                remote_result = BACKEND.get_result(job_id)
+                remote_result = _core_result_or_drive_backup(job_id)
             except Exception as exc:
                 raise HTTPException(502, "Core 結果服務暫時無法使用") from exc
             return {
@@ -675,7 +782,7 @@ def job_result(job_id: str, request: Request):
 
     if job.get("remote_job_id") and BACKEND.name == "core_api":
         try:
-            remote_result = BACKEND.get_result(job["remote_job_id"])
+            remote_result = _core_result_or_drive_backup(job["remote_job_id"])
         except Exception as exc:
             raise HTTPException(502, "Core 結果服務暫時無法使用") from exc
         _set_job(job_id, pages=remote_result.get("pages", []), rebuilt_pptx=remote_result.get("rebuilt_pptx"))
@@ -954,7 +1061,7 @@ def download_pptx(job_id: str, request: Request, custom: bool = False):
         if custom:
             raise HTTPException(409, "遠端工作尚不支援儲存自訂編輯版")
         try:
-            result = BACKEND.get_result(job_id)
+            result = _core_result_or_drive_backup(job_id)
         except Exception as exc:
             raise _core_http_error(exc, "result") from exc
         rebuilt_pptx = result.get("rebuilt_pptx")
@@ -988,7 +1095,7 @@ def _job_pptx_bytes(job_id: str, job: Dict[str, Any]) -> tuple[bytes, str]:
     filename_stem = Path(job.get("filename") or "presentation").stem
     if BACKEND.name == "core_api":
         try:
-            result = BACKEND.get_result(job_id)
+            result = _core_result_or_drive_backup(job_id)
         except Exception as exc:
             raise _core_http_error(exc, "result") from exc
         rebuilt_pptx = result.get("rebuilt_pptx")
@@ -996,13 +1103,16 @@ def _job_pptx_bytes(job_id: str, job: Dict[str, Any]) -> tuple[bytes, str]:
             raise HTTPException(404, "PPTX 尚未產生，請先匯出 PPTX")
         try:
             signed_url = BACKEND.artifact_redirect(job_id, rebuilt_pptx)
-        except Exception as exc:
-            raise _core_http_error(exc, "artifact") from exc
-        if not signed_url:
-            raise HTTPException(404, "檔案不存在或已過期")
-        import urllib.request
-        with urllib.request.urlopen(signed_url, timeout=60) as resp:
-            return resp.read(), filename_stem
+        except Exception:
+            signed_url = None
+        if signed_url:
+            import urllib.request
+            with urllib.request.urlopen(signed_url, timeout=60) as resp:
+                return resp.read(), filename_stem
+        drive_bytes = _drive_part_bytes(job_id, rebuilt_pptx)
+        if drive_bytes is not None:
+            return drive_bytes, filename_stem
+        raise HTTPException(404, "檔案不存在或已過期")
 
     pptx_path = job.get("rebuilt_pptx_custom") or job.get("rebuilt_pptx")
     if not pptx_path or isinstance(pptx_path, str) and pptx_path.startswith(("http://", "https://")):
@@ -1014,15 +1124,17 @@ def _job_pptx_bytes(job_id: str, job: Dict[str, Any]) -> tuple[bytes, str]:
 
 
 def _ensure_drive_root_folder(access_token: str, user_id: str) -> str:
-    """取得（或建立）使用者專屬的 MagicLayerStudio Drive 資料夾，並快取到 Neon。"""
+    """取得（或建立）使用者專屬的 .MagicLayerStudio Drive 資料夾，並快取到 Neon。
+    命名仿照 audioStudio 的 .audioStudio：加點前綴、放在 Drive 根目錄，
+    使用者已經存在的舊資料夾（不論有無點）繼續透過快取的 id 使用，不受影響。"""
     user = db.get_user(user_id)
     cached = user.get("drive_root_folder_id") if user else None
     if cached:
         return cached
-    folder = google_drive_ensure_folder(access_token, "MagicLayerStudio")
+    folder = google_drive_ensure_folder(access_token, ".MagicLayerStudio")
     folder_id = folder.get("id")
     if not folder_id:
-        raise RuntimeError("無法建立/取得 Google Drive 的 MagicLayerStudio 資料夾")
+        raise RuntimeError("無法建立/取得 Google Drive 的 .MagicLayerStudio 資料夾")
     db.set_user_drive_root_folder(user_id, folder_id)
     return folder_id
 
@@ -1066,12 +1178,24 @@ def save_job_permanent(job_id: str, request: Request):
             pass
         raise HTTPException(502, f"永久保存到 Google Drive 失敗：{exc}") from exc
 
+    # 除了最終的 PPTX，也把 Core 解析出的部件（背景圖、圖層、layers/objects.json）
+    # 依同樣結構備份進 .MagicLayerStudio/jobs/<job_id>/，讓 Core 端 GCS 產物過期
+    # 後，介面仍能從這裡回載，不必整份重新分析。純本機開發（local backend）沒有
+    # 這個過期問題，不需要備份。任何一步失敗都不影響已經完成的 PPTX 永久保存。
+    parts_backup = None
+    if BACKEND.name == "core_api":
+        try:
+            parts_backup = _backup_job_parts_to_drive(access_token, root_folder_id, job_id)
+        except Exception as exc:
+            parts_backup = {"total": 0, "uploaded": 0, "skipped": 0, "errors": [str(exc)]}
+
     return {
         "job_id": job_id,
         "is_permanent": True,
         "drive_folder_id": root_folder_id,
         "drive_file_id": drive_file.get("id"),
         "drive_web_link": drive_file.get("webViewLink"),
+        "drive_parts_backup": parts_backup,
     }
 
 
@@ -1397,6 +1521,134 @@ def google_drive_upload_bytes(
     if not isinstance(parsed, dict) or not parsed.get("id"):
         raise RuntimeError("Google Drive 上傳回傳格式錯誤")
     return parsed
+
+
+def google_drive_download_bytes(access_token: str, file_id: str, timeout: int = 60) -> bytes:
+    """從 Google Drive 下載檔案內容（回載已備份部件用，仿照 audioStudio 的
+    google_drive_download_file，但這裡直接回傳 bytes 而非寫到暫存檔）。"""
+    import urllib.request
+    from urllib.error import HTTPError, URLError
+
+    req = urllib.request.Request(
+        f"https://www.googleapis.com/drive/v3/files/{quote(file_id, safe='')}?alt=media",
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Google Drive 下載失敗 HTTP {error.code}: {detail}") from error
+    except URLError as error:
+        raise RuntimeError(f"Google Drive 下載連線失敗：{error}") from error
+
+
+# ── 把 Core 解析出的部件備份進 .MagicLayerStudio（仿照 audioStudio 的
+# sync_revision_text_artifacts_to_drive：依相同的相對路徑結構備份，並在 Neon
+# 記錄每個部件對應的 Drive file id + 一份 pages/rebuilt_pptx 結構快照）───────
+
+_DRIVE_PART_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".json": "application/json",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
+
+
+def _job_relative_parts(result: Dict[str, Any]) -> list[str]:
+    """列出一個 job 結果裡所有部件的相對路徑（背景圖、圖層 PNG、layers/objects.json、
+    重建的 PPTX），與 Core 端 artifacts 的相對路徑完全一致。"""
+    relatives: list[str] = []
+    for page in result.get("pages") or []:
+        for name in page.get("files") or []:
+            if isinstance(name, str) and name:
+                relatives.append(name)
+    rebuilt = result.get("rebuilt_pptx")
+    if isinstance(rebuilt, str) and rebuilt:
+        relatives.append(rebuilt)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for relative in relatives:
+        if relative not in seen:
+            seen.add(relative)
+            ordered.append(relative)
+    return ordered
+
+
+def _ensure_drive_path_folder(
+    access_token: str, root_folder_id: str, job_id: str, relative_dir: str, cache: Dict[str, str]
+) -> str:
+    """依相對路徑建立/取得對應的 Drive 子資料夾
+    （.MagicLayerStudio/jobs/<job_id>/<relative_dir>），跟 Core 自己的 job_dir
+    結構一致；用 cache 避免同一批部件重複呼叫 Drive API 建立同一層資料夾。"""
+    segments = ["jobs", job_id] + ([p for p in relative_dir.split("/") if p] if relative_dir else [])
+    parent_id = root_folder_id
+    built = ""
+    for segment in segments:
+        built = f"{built}/{segment}" if built else segment
+        cached = cache.get(built)
+        if cached:
+            parent_id = cached
+            continue
+        folder = google_drive_ensure_folder(access_token, segment, parent_id)
+        parent_id = str(folder.get("id") or "")
+        cache[built] = parent_id
+    return parent_id
+
+
+def _backup_job_parts_to_drive(access_token: str, root_folder_id: str, job_id: str) -> Dict[str, Any]:
+    """把 Core 解析出的所有部件依相同結構備份進 .MagicLayerStudio/jobs/<job_id>/。
+    單一部件失敗不影響其他部件；已經備份過的部件（Neon 裡已有 drive_file_id）
+    不重複上傳。無論部件上傳成不成功，都會盡量把 pages/rebuilt_pptx 結構快照
+    進 Neon，讓 Core 端過期後這個 job 的形狀本身也還查得到。"""
+    try:
+        result = BACKEND.get_result(job_id)
+    except Exception as exc:
+        return {"total": 0, "uploaded": 0, "skipped": 0, "errors": [f"讀取 Core 結果失敗：{exc}"]}
+
+    relatives = _job_relative_parts(result)
+    folder_cache: Dict[str, str] = {}
+    uploaded = 0
+    skipped = 0
+    errors: list[str] = []
+    for relative in relatives:
+        try:
+            existing = db.get_job_drive_part(job_id, relative)
+        except Exception:
+            existing = None
+        if existing and existing.get("drive_file_id"):
+            skipped += 1
+            continue
+        try:
+            signed_url = BACKEND.artifact_redirect(job_id, relative)
+            if not signed_url:
+                raise RuntimeError("Core 端找不到此部件（可能已過期）")
+            import urllib.request
+            with urllib.request.urlopen(signed_url, timeout=60) as resp:
+                content = resp.read()
+            rel_path = Path(relative)
+            relative_dir = rel_path.parent.as_posix()
+            if relative_dir == ".":
+                relative_dir = ""
+            folder_id = _ensure_drive_path_folder(access_token, root_folder_id, job_id, relative_dir, folder_cache)
+            media_type = _DRIVE_PART_MEDIA_TYPES.get(rel_path.suffix.lower(), "application/octet-stream")
+            uploaded_file = google_drive_upload_bytes(access_token, rel_path.name, folder_id, content, media_type=media_type)
+            drive_file_id = str(uploaded_file.get("id") or "")
+            if not drive_file_id:
+                raise RuntimeError("Google Drive 未回傳檔案 id")
+            db.save_job_drive_part(job_id, relative, drive_file_id, content_type=media_type, size_bytes=len(content))
+            uploaded += 1
+        except Exception as exc:
+            errors.append(f"{relative}: {exc}")
+
+    try:
+        db.save_job_pages_manifest(job_id, result.get("pages") or [], result.get("rebuilt_pptx"))
+    except Exception as exc:
+        errors.append(f"pages_manifest: {exc}")
+
+    return {"total": len(relatives), "uploaded": uploaded, "skipped": skipped, "errors": errors}
 
 
 def _save_session(session_id: str, session: dict[str, Any]) -> None:
